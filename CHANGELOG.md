@@ -1,3 +1,13 @@
+## 0.1.2 (2026-08-30)
+
+### Features
+
+- add protected resource registry with flexible RFC 8707 validation
+
+### Fixes
+
+- emit resource_name from DisplayName in RFC 9728 metadata
+
 ## 0.1.1 (2026-08-30)
 
 ### Features
