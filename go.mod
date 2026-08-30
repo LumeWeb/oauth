@@ -1,4 +1,4 @@
-module go.lumeweb.com/oauth // v0.1.1
+module go.lumeweb.com/oauth // v0.0.1
 
 go 1.26
 
