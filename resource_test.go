@@ -93,12 +93,17 @@ func TestValidateResourceCallback(t *testing.T) {
 }
 
 func TestBuildProtectedResourceMetadataFromResource(t *testing.T) {
+	const displayName = "Lume Research Data"
 	meta := BuildProtectedResourceMetadataFromResource(Resource{
 		ResourceURL: "https://research.example.com/data",
 		Scopes:      []string{"offline_access"},
+		DisplayName: displayName,
 	}, "https://auth.example.com")
 	if meta.Resource != "https://research.example.com/data" {
 		t.Fatalf("Resource = %q, want the registered URL", meta.Resource)
+	}
+	if meta.ResourceName != displayName {
+		t.Fatalf("ResourceName = %q, want the registered display name", meta.ResourceName)
 	}
 	if len(meta.AuthorizationServers) != 1 || meta.AuthorizationServers[0] != "https://auth.example.com" {
 		t.Fatalf("AuthorizationServers = %v, want the AS issuer", meta.AuthorizationServers)

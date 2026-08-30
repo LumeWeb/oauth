@@ -54,6 +54,7 @@ func BuildASMetadata(cfg Config) ASMetadata {
 // document.
 type ProtectedResourceMetadata struct {
 	Resource               string   `json:"resource"`
+	ResourceName           string   `json:"resource_name,omitempty"`
 	AuthorizationServers   []string `json:"authorization_servers"`
 	BearerMethodsSupported []string `json:"bearer_methods_supported"`
 	ScopesSupported        []string `json:"scopes_supported"`
@@ -81,6 +82,9 @@ func BuildProtectedResourceMetadataFromResource(reg Resource, issuer string) Pro
 	meta := BuildProtectedResourceMetadata(reg.ResourceURL, issuer)
 	if len(reg.Scopes) > 0 {
 		meta.ScopesSupported = reg.Scopes
+	}
+	if reg.DisplayName != "" {
+		meta.ResourceName = reg.DisplayName
 	}
 	return meta
 }
