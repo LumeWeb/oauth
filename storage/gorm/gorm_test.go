@@ -138,7 +138,7 @@ func TestRefreshRotation(t *testing.T) {
 	if err := s.IssueRefreshToken("root", "client_a", "", 5); err != nil {
 		t.Fatalf("issue root: %v", err)
 	}
-	clientID, _, successor, status, err := s.RotateRefreshToken("root", "client_a", "")
+	clientID, _, _, successor, status, err := s.RotateRefreshToken("root", "client_a", "")
 	if err != nil || status != oauth.RotateOK {
 		t.Fatalf("rotate: status=%v err=%v", status, err)
 	}
@@ -146,7 +146,7 @@ func TestRefreshRotation(t *testing.T) {
 		t.Fatalf("clientID=%q successor=%q", clientID, successor)
 	}
 	// In-window reuse returns the same successor.
-	_, _, again, status, err := s.RotateRefreshToken("root", "client_a", "")
+	_, _, _, again, status, err := s.RotateRefreshToken("root", "client_a", "")
 	if err != nil || status != oauth.RotateOKReused {
 		t.Fatalf("reuse: status=%v err=%v", status, err)
 	}
@@ -154,7 +154,7 @@ func TestRefreshRotation(t *testing.T) {
 		t.Fatalf("in-window reuse expected same successor, got %q", again)
 	}
 	// Unknown token.
-	if _, _, _, status, _ := s.RotateRefreshToken("nope", "", ""); status != oauth.RotateUnknown {
+	if _, _, _, _, status, _ := s.RotateRefreshToken("nope", "", ""); status != oauth.RotateUnknown {
 		t.Fatalf("unknown status=%v", status)
 	}
 }
@@ -170,7 +170,7 @@ func TestRefreshConcurrentFirstUseOnlyOneWins(t *testing.T) {
 	results := make(chan oauth.RotateStatus, n)
 	for i := 0; i < n; i++ {
 		go func() {
-			_, _, _, st, _ := s.RotateRefreshToken("root", "client_a", "")
+			_, _, _, _, st, _ := s.RotateRefreshToken("root", "client_a", "")
 			results <- st
 		}()
 	}
@@ -237,7 +237,7 @@ func TestReap(t *testing.T) {
 	if err := s.Reap(now); err != nil {
 		t.Fatalf("reap: %v", err)
 	}
-	if _, _, _, status, _ := s.RotateRefreshToken("expired-rt", "", ""); status != oauth.RotateUnknown {
+	if _, _, _, _, status, _ := s.RotateRefreshToken("expired-rt", "", ""); status != oauth.RotateUnknown {
 		t.Fatalf("expected rotated expired root gone, status=%v", status)
 	}
 	if _, err := s.GetAccessToken("expired-at"); !errors.Is(err, oauth.ErrTokenNotFound) {

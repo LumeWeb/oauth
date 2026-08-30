@@ -451,6 +451,54 @@ func TestRefreshTokenEmptyClientIDTolerated(t *testing.T) {
 	}
 }
 
+func TestRefreshKeepsBoundResource(t *testing.T) {
+	s := testServer()
+	const issuer = "https://auth.example.com"
+	const boundRes = issuer
+	redirect := "https://app.example.com/cb"
+	client := mustRegisterClient(t, s, redirect)
+
+	// Issue + exchange a resource-bound grant.
+	sum := sha256.Sum256([]byte(testVerifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	code, err := s.IssueAuthorizationCode(AuthorizeRequest{
+		ResponseType:        "code",
+		ClientID:            client.ClientID,
+		RedirectURI:         redirect,
+		CodeChallenge:       challenge,
+		CodeChallengeMethod: "S256",
+		Resource:            boundRes,
+	}, 42)
+	if err != nil {
+		t.Fatalf("issue code: %v", err)
+	}
+	resp, err := s.ExchangeCode(TokenRequest{
+		Code:         code,
+		ClientID:     client.ClientID,
+		RedirectURI:  redirect,
+		CodeVerifier: testVerifier,
+		Resource:     boundRes,
+	})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+
+	// Refresh presenting an empty/different resource; the new access token must
+	// keep the grant's bound resource, not the caller-provided value.
+	refreshed, err := s.RefreshToken(TokenRequest{
+		RefreshToken: resp.RefreshToken,
+		ClientID:     client.ClientID,
+	})
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	ts := s.store.(*testStore)
+	at := ts.accessTokens[refreshed.AccessToken]
+	if at.Resource != boundRes {
+		t.Fatalf("refreshed access token resource = %q, want bound %q", at.Resource, boundRes)
+	}
+}
+
 func TestInactiveClientBlocksTokenExchange(t *testing.T) {
 	s := testServer()
 	redirect := "https://app.example.com/cb"

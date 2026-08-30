@@ -46,10 +46,11 @@ type Storage interface {
 	GetRefreshToken(token string) (RefreshToken, error)
 
 	// RotateRefreshToken performs RFC 9700 §4.13 rotation + reuse detection.
-	// Returns (clientID, userID, successor, status, error). The userID is the
-	// resource-owner bound to the grant, carried through rotation so a
-	// refreshed access token keeps the holder's identity.
-	RotateRefreshToken(token, clientID, resource string) (string, uint, string, RotateStatus, error)
+	// Returns (clientID, userID, boundResource, successor, status, error). The
+	// userID is the resource-owner bound to the grant and boundResource is the
+	// RFC 8707 resource bound to the chain, carried through rotation so a
+	// refreshed access token keeps the holder's identity and resource.
+	RotateRefreshToken(token, clientID, resource string) (string, uint, string, string, RotateStatus, error)
 
 	// RevokeChain revokes every token in a chain (RFC 7009).
 	RevokeChain(chainRoot string) error

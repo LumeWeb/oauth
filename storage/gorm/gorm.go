@@ -233,7 +233,7 @@ func (s *Storage) issueInChain(token, successor, clientID, resource, chainRoot s
 // RotateRefreshToken implements RFC 9700 §4.13 rotation + reuse detection.
 // First use is claimed with a single conditional UPDATE of used_at and
 // successor so only one concurrent presenter can win.
-func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, uint, string, oauth.RotateStatus, error) {
+func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, uint, string, string, oauth.RotateStatus, error) {
 	now := time.Now()
 	// Retry when the winner's transaction rolled back and the token is still
 	// unused.
@@ -241,19 +241,19 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 		var rt OAuthRefreshToken
 		if err := s.db.Where("token = ?", token).First(&rt).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return "", 0, "", oauth.RotateUnknown, nil
+				return "", 0, "", "", oauth.RotateUnknown, nil
 			}
-			return "", 0, "", oauth.RotateUnknown, err
+			return "", 0, "", "", oauth.RotateUnknown, err
 		}
 		if rt.Revoked || now.After(rt.ExpiresAt) {
-			return "", 0, "", oauth.RotateReplay, nil
+			return "", 0, "", "", oauth.RotateReplay, nil
 		}
 		// Binding: presenting client and bound resource must match.
 		if clientID != "" && rt.ClientID != clientID {
-			return "", 0, "", oauth.RotateReplay, nil
+			return "", 0, "", "", oauth.RotateReplay, nil
 		}
 		if resource != "" && rt.Resource != "" && resource != rt.Resource {
-			return "", 0, "", oauth.RotateReplay, nil
+			return "", 0, "", "", oauth.RotateReplay, nil
 		}
 		if rt.UsedAt != nil {
 			// Already rotated; re-evaluate reuse-vs-replay.
@@ -284,10 +284,10 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 			}).Error
 		})
 		if err != nil {
-			return "", 0, "", oauth.RotateUnknown, err
+			return "", 0, "", "", oauth.RotateUnknown, err
 		}
 		if won {
-			return rt.ClientID, rt.UserID, succ, oauth.RotateOK, nil
+			return rt.ClientID, rt.UserID, rt.Resource, succ, oauth.RotateOK, nil
 		}
 		// Lost the claim; re-read and loop.
 	}
@@ -295,12 +295,12 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 	var current OAuthRefreshToken
 	if err := s.db.Where("token = ?", token).First(&current).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", 0, "", oauth.RotateUnknown, nil
+			return "", 0, "", "", oauth.RotateUnknown, nil
 		}
-		return "", 0, "", oauth.RotateUnknown, err
+		return "", 0, "", "", oauth.RotateUnknown, err
 	}
 	if current.UsedAt == nil {
-		return "", 0, "", oauth.RotateUnknown, nil
+		return "", 0, "", "", oauth.RotateUnknown, nil
 	}
 	return s.resolvePostUse(current, now)
 }
@@ -309,21 +309,21 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 // reuse-detection window it is a benign race and the SAME successor issued at
 // rotation time is returned (no extra tokens minted). Beyond the window the
 // whole chain is revoked and the use rejected (replay).
-func (s *Storage) resolvePostUse(rt OAuthRefreshToken, now time.Time) (string, uint, string, oauth.RotateStatus, error) {
+func (s *Storage) resolvePostUse(rt OAuthRefreshToken, now time.Time) (string, uint, string, string, oauth.RotateStatus, error) {
 	if rt.UsedAt == nil {
-		return "", 0, "", oauth.RotateReplay, nil
+		return "", 0, "", "", oauth.RotateReplay, nil
 	}
 	if now.Sub(*rt.UsedAt) <= s.reuseWindow {
 		if rt.Successor == "" {
-			return "", 0, "", oauth.RotateReplay, nil
+			return "", 0, "", "", oauth.RotateReplay, nil
 		}
-		return rt.ClientID, rt.UserID, rt.Successor, oauth.RotateOKReused, nil
+		return rt.ClientID, rt.UserID, rt.Resource, rt.Successor, oauth.RotateOKReused, nil
 	}
 	// Replay beyond the window: revoke the whole chain and reject.
 	if err := s.RevokeChain(rt.ChainRoot); err != nil {
-		return "", 0, "", oauth.RotateUnknown, err
+		return "", 0, "", "", oauth.RotateUnknown, err
 	}
-	return "", 0, "", oauth.RotateReplay, nil
+	return "", 0, "", "", oauth.RotateReplay, nil
 }
 
 // RevokeChain marks every token in a chain as revoked (RFC 7009).

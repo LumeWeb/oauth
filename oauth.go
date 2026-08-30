@@ -398,7 +398,7 @@ func (s *AuthorizationServer) RefreshToken(req TokenRequest) (*TokenResponse, er
 	if err := s.requireActiveClient(clientID); err != nil {
 		return nil, err
 	}
-	_, userID, successor, status, err := s.store.RotateRefreshToken(req.RefreshToken, clientID, req.Resource)
+	_, userID, boundResource, successor, status, err := s.store.RotateRefreshToken(req.RefreshToken, clientID, req.Resource)
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +410,7 @@ func (s *AuthorizationServer) RefreshToken(req TokenRequest) (*TokenResponse, er
 		if err := s.store.SaveAccessToken(AccessToken{
 			Token:     access,
 			ClientID:  clientID,
-			Resource:  req.Resource,
+			Resource:  boundResource,
 			UserID:    userID,
 			ExpiresAt: expiry,
 		}); err != nil {

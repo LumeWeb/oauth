@@ -114,29 +114,29 @@ func (ts *testStore) GetRefreshToken(token string) (RefreshToken, error) {
 	return rt, nil
 }
 
-func (ts *testStore) RotateRefreshToken(token, clientID, resource string) (string, uint, string, RotateStatus, error) {
+func (ts *testStore) RotateRefreshToken(token, clientID, resource string) (string, uint, string, string, RotateStatus, error) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	rt, ok := ts.refreshTokens[token]
 	if !ok {
-		return "", 0, "", RotateUnknown, nil
+		return "", 0, "", "", RotateUnknown, nil
 	}
 	now := time.Now()
 	if rt.Revoked || now.After(rt.ExpiresAt) {
-		return "", 0, "", RotateReplay, nil
+		return "", 0, "", "", RotateReplay, nil
 	}
 	if clientID != "" && rt.ClientID != clientID {
-		return "", 0, "", RotateReplay, nil
+		return "", 0, "", "", RotateReplay, nil
 	}
 	if resource != "" && rt.Resource != "" && resource != rt.Resource {
-		return "", 0, "", RotateReplay, nil
+		return "", 0, "", "", RotateReplay, nil
 	}
 	if rt.UsedAt != nil {
 		if now.Sub(*rt.UsedAt) <= ts.reuseWindow && rt.Successor != "" {
-			return rt.ClientID, rt.UserID, rt.Successor, RotateOKReused, nil
+			return rt.ClientID, rt.UserID, rt.Resource, rt.Successor, RotateOKReused, nil
 		}
 		_ = ts.revokeChainLocked(rt.ChainRoot)
-		return "", 0, "", RotateReplay, nil
+		return "", 0, "", "", RotateReplay, nil
 	}
 	succ := NewToken(32)
 	usedAt := now
@@ -151,7 +151,7 @@ func (ts *testStore) RotateRefreshToken(token, clientID, resource string) (strin
 		ChainRoot: rt.ChainRoot,
 		ExpiresAt: now.Add(ts.refreshTTL),
 	}
-	return rt.ClientID, rt.UserID, succ, RotateOK, nil
+	return rt.ClientID, rt.UserID, rt.Resource, succ, RotateOK, nil
 }
 
 func (ts *testStore) revokeChainLocked(root string) error {

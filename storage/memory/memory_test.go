@@ -55,15 +55,15 @@ func TestRefreshRotationAndReuse(t *testing.T) {
 	if err := s.IssueRefreshToken("root", "client_a", "", 5); err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	_, _, successor, status, err := s.RotateRefreshToken("root", "client_a", "")
+	_, _, _, successor, status, err := s.RotateRefreshToken("root", "client_a", "")
 	if err != nil || status != oauth.RotateOK {
 		t.Fatalf("rotate: status=%v err=%v", status, err)
 	}
-	_, _, again, status, err := s.RotateRefreshToken("root", "client_a", "")
+	_, _, _, again, status, err := s.RotateRefreshToken("root", "client_a", "")
 	if err != nil || status != oauth.RotateOKReused || again != successor {
 		t.Fatalf("reuse: status=%v again=%q err=%v", status, again, err)
 	}
-	if _, _, _, status, _ := s.RotateRefreshToken("nope", "", ""); status != oauth.RotateUnknown {
+	if _, _, _, _, status, _ := s.RotateRefreshToken("nope", "", ""); status != oauth.RotateUnknown {
 		t.Fatalf("unknown status=%v", status)
 	}
 }
@@ -76,7 +76,7 @@ func TestRefreshBeyondWindowReplayRevokesChain(t *testing.T) {
 	if err := s.IssueRefreshToken("root", "client_a", "", 4); err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	_, _, successor, status, err := s.RotateRefreshToken("root", "client_a", "")
+	_, _, _, successor, status, err := s.RotateRefreshToken("root", "client_a", "")
 	if err != nil || status != oauth.RotateOK {
 		t.Fatalf("first rotate: status=%v err=%v", status, err)
 	}
@@ -87,12 +87,12 @@ func TestRefreshBeyondWindowReplayRevokesChain(t *testing.T) {
 	rt.UsedAt = &past
 	s.refreshTokens["root"] = rt
 
-	_, _, _, status, err = s.RotateRefreshToken("root", "client_a", "")
+	_, _, _, _, status, err = s.RotateRefreshToken("root", "client_a", "")
 	if err != nil || status != oauth.RotateReplay {
 		t.Fatalf("replay rotate: status=%v err=%v", status, err)
 	}
 	// Chain must be fully revoked: the successor is now rejected too.
-	if _, _, _, status, _ := s.RotateRefreshToken(successor, "client_a", ""); status != oauth.RotateReplay {
+	if _, _, _, _, status, _ := s.RotateRefreshToken(successor, "client_a", ""); status != oauth.RotateReplay {
 		t.Fatalf("successor of revoked chain should be RotateReplay, got %v", status)
 	}
 }
@@ -120,7 +120,7 @@ func TestConcurrentFirstUseOnlyOneWins(t *testing.T) {
 	results := make(chan oauth.RotateStatus, n)
 	for i := 0; i < n; i++ {
 		go func() {
-			_, _, _, st, _ := s.RotateRefreshToken("root", "client_a", "")
+			_, _, _, _, st, _ := s.RotateRefreshToken("root", "client_a", "")
 			results <- st
 		}()
 	}
@@ -171,7 +171,7 @@ func TestReap(t *testing.T) {
 	if _, err := s.GetAccessToken("expired-at"); !errors.Is(err, oauth.ErrTokenNotFound) {
 		t.Fatalf("expected expired at gone, got %v", err)
 	}
-	if _, _, _, status, _ := s.RotateRefreshToken("expired-rt", "", ""); status != oauth.RotateUnknown {
+	if _, _, _, _, status, _ := s.RotateRefreshToken("expired-rt", "", ""); status != oauth.RotateUnknown {
 		t.Fatalf("expected expired rt gone, status=%v", status)
 	}
 }
