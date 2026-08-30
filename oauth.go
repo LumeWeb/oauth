@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -156,6 +157,10 @@ type AccessToken struct {
 type AuthorizationServer struct {
 	cfg   Config
 	store Storage
+
+	// issuerMu guards cfg.Issuer against concurrent reads (expectedResource,
+	// Config) and writes (SetIssuer) during runtime reconfiguration.
+	issuerMu sync.RWMutex
 }
 
 // NewAuthorizationServer creates a new AS with the given config and storage.
@@ -176,29 +181,56 @@ func NewAuthorizationServer(cfg Config, store Storage) *AuthorizationServer {
 // Plain-HTTP issuers are accepted only for loopback hosts (local development
 // and tests) to avoid the certificate burden in those environments.
 func validateIssuer(issuer string) {
+	if err := validateIssuerErr(issuer); err != nil {
+		panic(err.Error())
+	}
+}
+
+// validateIssuerErr is the non-panicking form of validateIssuer, used by
+// runtime reconfiguration paths.
+func validateIssuerErr(issuer string) error {
 	u, err := url.Parse(issuer)
 	if err != nil || u.Host == "" {
-		panic("oauth: Config.Issuer is required and must be a valid URL")
+		return errInvalidIssuer
 	}
 	switch u.Scheme {
 	case "https":
-		return
+		return nil
 	case "http":
 		if IsLoopbackRedirectURI(u) {
-			return
+			return nil
 		}
 	}
-	panic("oauth: Config.Issuer must use https (or http on a loopback host)")
+	return errNonLoopbackHTTPIssuer
 }
 
 // Config returns the effective configuration (with defaults applied).
 func (s *AuthorizationServer) Config() Config {
+	s.issuerMu.RLock()
+	defer s.issuerMu.RUnlock()
 	return s.cfg
+}
+
+// SetIssuer updates the AS issuer (RFC 8414) at runtime. It re-derives the
+// RFC 8707 resource that authorize requests must bind, so it must be called
+// whenever the externally reachable base URL changes after startup (e.g. once
+// a tunnel allocates its public URL). Invalid issuers are rejected and the
+// existing issuer is left untouched.
+func (s *AuthorizationServer) SetIssuer(issuer string) error {
+	if err := validateIssuerErr(issuer); err != nil {
+		return err
+	}
+	s.issuerMu.Lock()
+	s.cfg.Issuer = issuer
+	s.issuerMu.Unlock()
+	return nil
 }
 
 // expectedResource is the RFC 8707 resource this AS serves. Auth requests that
 // bind a different resource are rejected.
 func (s *AuthorizationServer) expectedResource() string {
+	s.issuerMu.RLock()
+	defer s.issuerMu.RUnlock()
 	return strings.TrimRight(s.cfg.Issuer, "/")
 }
 
