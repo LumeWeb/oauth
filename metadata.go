@@ -73,3 +73,14 @@ func BuildProtectedResourceMetadata(resourceURL, issuer string) ProtectedResourc
 		},
 	}
 }
+
+// BuildProtectedResourceMetadataFromResource constructs RFC 9728 metadata from
+// a registered Resource, using its scopes when present. It always points the
+// AuthorizationServers field back at the AS issuer.
+func BuildProtectedResourceMetadataFromResource(reg Resource, issuer string) ProtectedResourceMetadata {
+	meta := BuildProtectedResourceMetadata(reg.ResourceURL, issuer)
+	if len(reg.Scopes) > 0 {
+		meta.ScopesSupported = reg.Scopes
+	}
+	return meta
+}
