@@ -1,6 +1,9 @@
 package oauth
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // OAuthError wraps an RFC 6749 §5.2 error code with a human-readable
 // description. Token endpoint handlers map its Code directly onto the "error"
@@ -36,6 +39,15 @@ func NewUnsupportedGrantTypeError(desc string) *OAuthError {
 func NewInvalidClientMetadataError(desc string) *OAuthError {
 	return &OAuthError{Code: "invalid_client_metadata", Description: desc}
 }
+
+// Issuer validation errors returned by SetIssuer.
+var (
+	// errInvalidIssuer indicates the issuer is not a valid URL with a host.
+	errInvalidIssuer = errors.New("oauth: Config.Issuer is required and must be a valid URL")
+	// errNonLoopbackHTTPIssuer indicates an http (non-https) issuer that is
+	// not on a loopback host, which is disallowed by the RFC 8414 contract.
+	errNonLoopbackHTTPIssuer = errors.New("oauth: Config.Issuer must use https (or http on a loopback host)")
+)
 
 // Sentinel storage errors. Storage implementations return these so the
 // AuthorizationServer can translate persistence outcomes into RFC 6749 §5.2
