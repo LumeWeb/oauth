@@ -8,8 +8,11 @@ A shared OAuth 2.1 authorization server domain-logic and storage library for
 Go. It is the extracted, framework-agnostic core so multiple consumers
 implement the same OAuth invariants.
 
-Scaffold only — no implementation code yet. See `AGENTS.md` for the intended
-packages.
+## Packages
+
+- Root `oauth` — stdlib-only domain logic and the `AuthorizationServer` facade
+- `storage/gorm` — GORM-backed `Storage` adapter (default production)
+- `storage/memory` — in-memory `Storage` for tests and dev
 
 ## License
 
