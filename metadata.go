@@ -54,6 +54,7 @@ func BuildASMetadata(cfg Config) ASMetadata {
 // document.
 type ProtectedResourceMetadata struct {
 	Resource               string   `json:"resource"`
+	ResourceName           string   `json:"resource_name,omitempty"`
 	AuthorizationServers   []string `json:"authorization_servers"`
 	BearerMethodsSupported []string `json:"bearer_methods_supported"`
 	ScopesSupported        []string `json:"scopes_supported"`
@@ -72,4 +73,18 @@ func BuildProtectedResourceMetadata(resourceURL, issuer string) ProtectedResourc
 			"offline_access",
 		},
 	}
+}
+
+// BuildProtectedResourceMetadataFromResource constructs RFC 9728 metadata from
+// a registered Resource, using its scopes when present. It always points the
+// AuthorizationServers field back at the AS issuer.
+func BuildProtectedResourceMetadataFromResource(reg Resource, issuer string) ProtectedResourceMetadata {
+	meta := BuildProtectedResourceMetadata(reg.ResourceURL, issuer)
+	if len(reg.Scopes) > 0 {
+		meta.ScopesSupported = reg.Scopes
+	}
+	if reg.DisplayName != "" {
+		meta.ResourceName = reg.DisplayName
+	}
+	return meta
 }

@@ -25,6 +25,11 @@ type Config struct {
 	// ReuseWindow is the grace period for re-presented rotated refresh tokens
 	// (treated as a benign race, not a replay). Default: 30s.
 	ReuseWindow time.Duration
+	// ValidateResource, if non-nil, is called to verify that a resource
+	// parameter (RFC 8707) identifies an audience this AS is authorized to
+	// issue tokens for. When nil, only the issuer URL and resources registered
+	// via RegisterResource are accepted.
+	ValidateResource func(resource string) bool
 }
 
 // DefaultConfig returns a Config with production-safe defaults. Issuer is left
@@ -152,6 +157,22 @@ type AccessToken struct {
 	ExpiresAt time.Time
 }
 
+// Resource describes a protected resource (RFC 9728 / RFC 8707) that this AS
+// is authorized to issue tokens for. Consumers register resources at startup
+// so the AS can validate the resource parameter in authorize requests and
+// serve protected-resource metadata.
+type Resource struct {
+	// ResourceURL is the canonical URI identifying the protected resource
+	// (RFC 8707 §2). Tokens issued for this resource carry it as the audience.
+	ResourceURL string
+	// Scopes are the scope values this resource supports (RFC 9728
+	// scopes_supported).
+	Scopes []string
+	// DisplayName is a human-readable name for the resource (RFC 9728
+	// resource_name).
+	DisplayName string
+}
+
 // AuthorizationServer is the core AS — pure domain logic, no HTTP. It
 // delegates all persistence to the Storage interface.
 type AuthorizationServer struct {
@@ -161,6 +182,10 @@ type AuthorizationServer struct {
 	// issuerMu guards cfg.Issuer against concurrent reads (expectedResource,
 	// Config) and writes (SetIssuer) during runtime reconfiguration.
 	issuerMu sync.RWMutex
+
+	// resMu guards access to the registered resource registry.
+	resMu     sync.RWMutex
+	resources map[string]Resource
 }
 
 // NewAuthorizationServer creates a new AS with the given config and storage.
@@ -174,7 +199,7 @@ func NewAuthorizationServer(cfg Config, store Storage) *AuthorizationServer {
 	}
 	cfg = cfg.withDefaults()
 	validateIssuer(cfg.Issuer)
-	return &AuthorizationServer{cfg: cfg, store: store}
+	return &AuthorizationServer{cfg: cfg, store: store, resources: make(map[string]Resource)}
 }
 
 // validateIssuer enforces the REQUIRED HTTPS issuer contract from RFC 8414.
@@ -232,6 +257,25 @@ func (s *AuthorizationServer) expectedResource() string {
 	s.issuerMu.RLock()
 	defer s.issuerMu.RUnlock()
 	return strings.TrimRight(s.cfg.Issuer, "/")
+}
+
+// validateResource checks whether a resource parameter (RFC 8707) is an
+// audience this AS is authorized to issue tokens for. The check proceeds in
+// order: (1) if ValidateResource is configured, defer to the callback;
+// (2) accept the issuer URL; (3) accept any URL registered via
+// RegisterResource. If none match, the resource is rejected.
+func (s *AuthorizationServer) validateResource(resource string) bool {
+	if s.cfg.ValidateResource != nil {
+		return s.cfg.ValidateResource(resource)
+	}
+	normalized := strings.TrimRight(resource, "/")
+	if normalized == s.expectedResource() {
+		return true
+	}
+	s.resMu.RLock()
+	defer s.resMu.RUnlock()
+	_, ok := s.resources[normalized]
+	return ok
 }
 
 // requireActiveClient rejects unknown or deactivated clients before tokens
@@ -318,7 +362,7 @@ func (s *AuthorizationServer) ValidateAuthorizeRequest(req AuthorizeRequest) err
 	if !ValidBase64URL(req.CodeChallenge) {
 		return NewInvalidRequestError("code_challenge must be base64url (RFC 7636)")
 	}
-	if req.Resource != "" && req.Resource != s.expectedResource() {
+	if req.Resource != "" && !s.validateResource(req.Resource) {
 		return NewInvalidRequestError("invalid resource")
 	}
 	return nil
@@ -499,4 +543,48 @@ func (s *AuthorizationServer) RevokeToken(token string) error {
 // Reap deletes expired codes, tokens, and stale clients.
 func (s *AuthorizationServer) Reap() error {
 	return s.store.Reap(time.Now())
+}
+
+// ---- Resource registry (RFC 8707 / RFC 9728) ----
+
+// RegisterResource registers a protected resource that this AS is authorized
+// to issue tokens for. Duplicate registrations for the same ResourceURL update
+// the existing entry. Registrations are in-memory; callers should re-register
+// on restart.
+func (s *AuthorizationServer) RegisterResource(reg Resource) {
+	normalized := strings.TrimRight(reg.ResourceURL, "/")
+	reg.ResourceURL = normalized
+	s.resMu.Lock()
+	defer s.resMu.Unlock()
+	s.resources[normalized] = reg
+}
+
+// UnregisterResource removes a previously registered resource. If the resource
+// is not registered, this is a no-op.
+func (s *AuthorizationServer) UnregisterResource(resourceURL string) {
+	normalized := strings.TrimRight(resourceURL, "/")
+	s.resMu.Lock()
+	defer s.resMu.Unlock()
+	delete(s.resources, normalized)
+}
+
+// GetResource returns the registration for a resource URL and a boolean
+// indicating whether it was found.
+func (s *AuthorizationServer) GetResource(resourceURL string) (Resource, bool) {
+	normalized := strings.TrimRight(resourceURL, "/")
+	s.resMu.RLock()
+	defer s.resMu.RUnlock()
+	reg, ok := s.resources[normalized]
+	return reg, ok
+}
+
+// ListResources returns all registered resources.
+func (s *AuthorizationServer) ListResources() []Resource {
+	s.resMu.RLock()
+	defer s.resMu.RUnlock()
+	list := make([]Resource, 0, len(s.resources))
+	for _, r := range s.resources {
+		list = append(list, r)
+	}
+	return list
 }
