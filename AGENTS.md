@@ -1,9 +1,7 @@
 # AGENTS.md
 
 This file provides development guidelines and architectural documentation for
-the OAuth library. The repository is scaffold only — no implementation code
-exists yet. This describes the intended structure and tooling so agents and
-developers follow the same conventions.
+the OAuth library.
 
 ## Project
 
