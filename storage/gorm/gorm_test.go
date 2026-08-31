@@ -303,4 +303,17 @@ func TestScopeRoundTrip(t *testing.T) {
 	if successor == "" {
 		t.Fatal("expected a successor token")
 	}
+
+	// Two-hop rotation: the successor's successor must still carry the scope,
+	// guarding against a hop that drops granted permissions.
+	_, _, _, scope2, successor2, status2, err := s.RotateRefreshToken(successor, "", "")
+	if err != nil || status2 != oauth.RotateOK {
+		t.Fatalf("second rotate: status=%v err=%v", status2, err)
+	}
+	if scope2 != "read write" {
+		t.Fatalf("second-hop scope lost: got %q, want %q", scope2, "read write")
+	}
+	if successor2 == "" {
+		t.Fatal("expected a second successor token")
+	}
 }

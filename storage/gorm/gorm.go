@@ -275,12 +275,15 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 				return nil // lost the claim; no error
 			}
 			won = true
-			// Won the claim: persist the successor in the same transaction.
+			// Won the claim: persist the successor in the same transaction. The
+			// bound scope rides forward so a second rotation hop does not drop
+			// granted permissions.
 			return tx.Create(&OAuthRefreshToken{
 				Token:     succ,
 				ClientID:  rt.ClientID,
 				Resource:  rt.Resource,
 				UserID:    rt.UserID,
+				Scope:     rt.Scope,
 				ChainRoot: rt.ChainRoot,
 				ExpiresAt: now.Add(s.refreshTTL),
 			}).Error
