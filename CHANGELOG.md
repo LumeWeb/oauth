@@ -1,3 +1,13 @@
+## 0.1.3 (2026-08-31)
+
+### Features
+
+- surface bound resource and scope in access token validation
+
+### Fixes
+
+- carry scope through refresh token rotation in gorm adapter
+
 ## 0.1.2 (2026-08-30)
 
 ### Features
