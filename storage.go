@@ -39,18 +39,19 @@ type Storage interface {
 	// ---- Refresh tokens (RFC 9700) ----
 
 	// IssueRefreshToken stores the initial refresh token of a new chain.
-	IssueRefreshToken(token, clientID, resource string, userID uint) error
+	IssueRefreshToken(token, clientID, resource, scope string, userID uint) error
 
 	// GetRefreshToken retrieves a refresh token by value. Returns
 	// ErrRefreshTokenNotFound if not found.
 	GetRefreshToken(token string) (RefreshToken, error)
 
 	// RotateRefreshToken performs RFC 9700 §4.13 rotation + reuse detection.
-	// Returns (clientID, userID, boundResource, successor, status, error). The
-	// userID is the resource-owner bound to the grant and boundResource is the
-	// RFC 8707 resource bound to the chain, carried through rotation so a
-	// refreshed access token keeps the holder's identity and resource.
-	RotateRefreshToken(token, clientID, resource string) (string, uint, string, string, RotateStatus, error)
+	// Returns (clientID, userID, boundResource, scope, successor, status,
+	// error). userID is the resource-owner bound to the grant; boundResource
+	// and scope are the RFC 8707 resource and granted scope carried through
+	// rotation so a refreshed access token keeps the holder's identity,
+	// audience, and scope.
+	RotateRefreshToken(token, clientID, resource string) (string, uint, string, string, string, RotateStatus, error)
 
 	// RevokeChain revokes every token in a chain (RFC 7009).
 	RevokeChain(chainRoot string) error

@@ -574,3 +574,99 @@ func TestInvalidIssuerPanics(t *testing.T) {
 	assertPanics("plain http non-loopback", "http://evil.example.com")
 	assertPanics("not a url", "not-a-url")
 }
+
+// TestValidateAccessTokenInfoResourcesAndScope verifies ValidateAccessTokenInfo
+// surfaces the RFC 8707 bound resource, client, and granted scope, and that
+// those are carried through refresh rotation so downstream resource servers can
+// enforce audience binding + scope requirements on every token in the grant.
+func TestValidateAccessTokenInfoResourcesAndScope(t *testing.T) {
+	s := testServer()
+	redirect := "https://app.example.com/cb"
+	client := mustRegisterClient(t, s, redirect)
+	verifier := testVerifier
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	const resource = "https://mcp.example.com"
+	const scope = "read write"
+
+	// Register the MCP resource so the AS issues tokens bound to it as an
+	// audience (RFC 8707) rather than the issuer URL.
+	s.RegisterResource(Resource{
+		ResourceURL: resource,
+		Scopes:      []string{"read", "write"},
+	})
+
+	code, err := s.IssueAuthorizationCode(AuthorizeRequest{
+		ResponseType:        "code",
+		ClientID:            client.ClientID,
+		RedirectURI:         redirect,
+		CodeChallenge:       challenge,
+		CodeChallengeMethod: "S256",
+		Resource:            resource,
+		Scope:               scope,
+	}, 42)
+	if err != nil {
+		t.Fatalf("issue code: %v", err)
+	}
+
+	resp, err := s.ExchangeCode(TokenRequest{
+		GrantType:    "authorization_code",
+		Code:         code,
+		ClientID:     client.ClientID,
+		RedirectURI:  redirect,
+		CodeVerifier: verifier,
+		Resource:     resource,
+	})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+
+	at, ok := s.ValidateAccessTokenInfo(resp.AccessToken)
+	if !ok {
+		t.Fatal("expected access token valid")
+	}
+	if at.Resource != resource {
+		t.Errorf("resource = %q, want %q", at.Resource, resource)
+	}
+	if at.ClientID != client.ClientID {
+		t.Errorf("clientID = %q, want %q", at.ClientID, client.ClientID)
+	}
+	if at.Scope != scope {
+		t.Errorf("scope = %q, want %q", at.Scope, scope)
+	}
+	if at.UserID != 42 {
+		t.Errorf("userID = %d, want 42", at.UserID)
+	}
+
+	// Legacy 3-value validation remains authoritative for liveness.
+	if uid, _, ok := s.ValidateAccessToken(resp.AccessToken); !ok || uid != 42 {
+		t.Fatalf("legacy ValidateAccessToken: ok=%v uid=%d", ok, uid)
+	}
+
+	t.Run("resource and scope survive refresh rotation", func(t *testing.T) {
+		refreshed, err := s.RefreshToken(TokenRequest{
+			GrantType:    "refresh_token",
+			RefreshToken: resp.RefreshToken,
+			ClientID:     client.ClientID,
+		})
+		if err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+		rot, ok := s.ValidateAccessTokenInfo(refreshed.AccessToken)
+		if !ok {
+			t.Fatal("expected refreshed access token valid")
+		}
+		if rot.Resource != resource {
+			t.Errorf("refreshed resource = %q, want %q", rot.Resource, resource)
+		}
+		if rot.Scope != scope {
+			t.Errorf("refreshed scope = %q, want %q", rot.Scope, scope)
+		}
+	})
+
+	t.Run("unknown token yields no info", func(t *testing.T) {
+		if _, ok := s.ValidateAccessTokenInfo("not-a-real-token"); ok {
+			t.Fatal("expected unknown token to be invalid")
+		}
+	})
+}

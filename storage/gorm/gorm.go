@@ -187,8 +187,8 @@ func (s *Storage) ConsumeCode(code string) error {
 
 // IssueRefreshToken stores the initial refresh token of a new chain (the
 // root). The root has no successor yet.
-func (s *Storage) IssueRefreshToken(token, clientID, resource string, userID uint) error {
-	return s.issueInChain(token, "", clientID, resource, token, userID)
+func (s *Storage) IssueRefreshToken(token, clientID, resource, scope string, userID uint) error {
+	return s.issueInChain(token, "", clientID, resource, scope, token, userID)
 }
 
 // GetRefreshToken retrieves a refresh token by value, returning
@@ -206,6 +206,7 @@ func (s *Storage) GetRefreshToken(token string) (oauth.RefreshToken, error) {
 		ClientID:  model.ClientID,
 		Resource:  model.Resource,
 		UserID:    model.UserID,
+		Scope:     model.Scope,
 		ChainRoot: model.ChainRoot,
 		ExpiresAt: model.ExpiresAt,
 		UsedAt:    model.UsedAt,
@@ -217,13 +218,14 @@ func (s *Storage) GetRefreshToken(token string) (oauth.RefreshToken, error) {
 // issueInChain stores a refresh token whose chain root is chainRoot. Successor
 // tokens from rotation inherit the chain root of the token they rotate from so
 // a whole grant chain can be revoked together.
-func (s *Storage) issueInChain(token, successor, clientID, resource, chainRoot string, userID uint) error {
+func (s *Storage) issueInChain(token, successor, clientID, resource, scope, chainRoot string, userID uint) error {
 	now := time.Now()
 	return s.db.Create(&OAuthRefreshToken{
 		Token:     token,
 		ClientID:  clientID,
 		Resource:  resource,
 		UserID:    userID,
+		Scope:     scope,
 		ChainRoot: chainRoot,
 		ExpiresAt: now.Add(s.refreshTTL),
 		Successor: successor,
@@ -233,7 +235,7 @@ func (s *Storage) issueInChain(token, successor, clientID, resource, chainRoot s
 // RotateRefreshToken implements RFC 9700 §4.13 rotation + reuse detection.
 // First use is claimed with a single conditional UPDATE of used_at and
 // successor so only one concurrent presenter can win.
-func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, uint, string, string, oauth.RotateStatus, error) {
+func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, uint, string, string, string, oauth.RotateStatus, error) {
 	now := time.Now()
 	// Retry when the winner's transaction rolled back and the token is still
 	// unused.
@@ -241,19 +243,19 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 		var rt OAuthRefreshToken
 		if err := s.db.Where("token = ?", token).First(&rt).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return "", 0, "", "", oauth.RotateUnknown, nil
+				return "", 0, "", "", "", oauth.RotateUnknown, nil
 			}
-			return "", 0, "", "", oauth.RotateUnknown, err
+			return "", 0, "", "", "", oauth.RotateUnknown, err
 		}
 		if rt.Revoked || now.After(rt.ExpiresAt) {
-			return "", 0, "", "", oauth.RotateReplay, nil
+			return "", 0, "", "", "", oauth.RotateReplay, nil
 		}
 		// Binding: presenting client and bound resource must match.
 		if clientID != "" && rt.ClientID != clientID {
-			return "", 0, "", "", oauth.RotateReplay, nil
+			return "", 0, "", "", "", oauth.RotateReplay, nil
 		}
 		if resource != "" && rt.Resource != "" && resource != rt.Resource {
-			return "", 0, "", "", oauth.RotateReplay, nil
+			return "", 0, "", "", "", oauth.RotateReplay, nil
 		}
 		if rt.UsedAt != nil {
 			// Already rotated; re-evaluate reuse-vs-replay.
@@ -284,10 +286,10 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 			}).Error
 		})
 		if err != nil {
-			return "", 0, "", "", oauth.RotateUnknown, err
+			return "", 0, "", "", "", oauth.RotateUnknown, err
 		}
 		if won {
-			return rt.ClientID, rt.UserID, rt.Resource, succ, oauth.RotateOK, nil
+			return rt.ClientID, rt.UserID, rt.Resource, rt.Scope, succ, oauth.RotateOK, nil
 		}
 		// Lost the claim; re-read and loop.
 	}
@@ -295,12 +297,12 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 	var current OAuthRefreshToken
 	if err := s.db.Where("token = ?", token).First(&current).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", 0, "", "", oauth.RotateUnknown, nil
+			return "", 0, "", "", "", oauth.RotateUnknown, nil
 		}
-		return "", 0, "", "", oauth.RotateUnknown, err
+		return "", 0, "", "", "", oauth.RotateUnknown, err
 	}
 	if current.UsedAt == nil {
-		return "", 0, "", "", oauth.RotateUnknown, nil
+		return "", 0, "", "", "", oauth.RotateUnknown, nil
 	}
 	return s.resolvePostUse(current, now)
 }
@@ -309,21 +311,21 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 // reuse-detection window it is a benign race and the SAME successor issued at
 // rotation time is returned (no extra tokens minted). Beyond the window the
 // whole chain is revoked and the use rejected (replay).
-func (s *Storage) resolvePostUse(rt OAuthRefreshToken, now time.Time) (string, uint, string, string, oauth.RotateStatus, error) {
+func (s *Storage) resolvePostUse(rt OAuthRefreshToken, now time.Time) (string, uint, string, string, string, oauth.RotateStatus, error) {
 	if rt.UsedAt == nil {
-		return "", 0, "", "", oauth.RotateReplay, nil
+		return "", 0, "", "", "", oauth.RotateReplay, nil
 	}
 	if now.Sub(*rt.UsedAt) <= s.reuseWindow {
 		if rt.Successor == "" {
-			return "", 0, "", "", oauth.RotateReplay, nil
+			return "", 0, "", "", "", oauth.RotateReplay, nil
 		}
-		return rt.ClientID, rt.UserID, rt.Resource, rt.Successor, oauth.RotateOKReused, nil
+		return rt.ClientID, rt.UserID, rt.Resource, rt.Scope, rt.Successor, oauth.RotateOKReused, nil
 	}
 	// Replay beyond the window: revoke the whole chain and reject.
 	if err := s.RevokeChain(rt.ChainRoot); err != nil {
-		return "", 0, "", "", oauth.RotateUnknown, err
+		return "", 0, "", "", "", oauth.RotateUnknown, err
 	}
-	return "", 0, "", "", oauth.RotateReplay, nil
+	return "", 0, "", "", "", oauth.RotateReplay, nil
 }
 
 // RevokeChain marks every token in a chain as revoked (RFC 7009).
@@ -342,6 +344,7 @@ func (s *Storage) SaveAccessToken(token oauth.AccessToken) error {
 		ClientID:  token.ClientID,
 		Resource:  token.Resource,
 		UserID:    token.UserID,
+		Scope:     token.Scope,
 		ExpiresAt: token.ExpiresAt,
 	}).Error
 }
@@ -361,6 +364,7 @@ func (s *Storage) GetAccessToken(token string) (oauth.AccessToken, error) {
 		ClientID:  model.ClientID,
 		Resource:  model.Resource,
 		UserID:    model.UserID,
+		Scope:     model.Scope,
 		ExpiresAt: model.ExpiresAt,
 	}, nil
 }
@@ -383,6 +387,7 @@ func (s *Storage) AllAccessTokens() ([]oauth.AccessToken, error) {
 			ClientID:  r.ClientID,
 			Resource:  r.Resource,
 			UserID:    r.UserID,
+			Scope:     r.Scope,
 			ExpiresAt: r.ExpiresAt,
 		})
 	}
