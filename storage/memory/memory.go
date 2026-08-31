@@ -136,10 +136,10 @@ func (s *Storage) ConsumeCode(code string) error {
 
 // IssueRefreshToken stores the initial refresh token of a new chain (the
 // root). The root has no successor yet.
-func (s *Storage) IssueRefreshToken(token, clientID, resource string, userID uint) error {
+func (s *Storage) IssueRefreshToken(token, clientID, resource, scope string, userID uint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.issueInChainLocked(token, "", clientID, resource, token, userID)
+	return s.issueInChainLocked(token, "", clientID, resource, scope, token, userID)
 }
 
 // GetRefreshToken retrieves a refresh token by value, returning
@@ -156,12 +156,13 @@ func (s *Storage) GetRefreshToken(token string) (oauth.RefreshToken, error) {
 
 // issueInChainLocked stores a refresh token whose chain root is chainRoot.
 // Callers must hold s.mu.
-func (s *Storage) issueInChainLocked(token, successor, clientID, resource, chainRoot string, userID uint) error {
+func (s *Storage) issueInChainLocked(token, successor, clientID, resource, scope, chainRoot string, userID uint) error {
 	s.refreshTokens[token] = oauth.RefreshToken{
 		Token:     token,
 		ClientID:  clientID,
 		Resource:  resource,
 		UserID:    userID,
+		Scope:     scope,
 		ChainRoot: chainRoot,
 		ExpiresAt: time.Now().Add(s.refreshTTL),
 		Successor: successor,
@@ -172,23 +173,23 @@ func (s *Storage) issueInChainLocked(token, successor, clientID, resource, chain
 // RotateRefreshToken implements RFC 9700 §4.13 rotation + reuse detection.
 // The whole decision runs under a single mutex; lock-held helpers are used
 // for chain revocation and successor issuance.
-func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, uint, string, string, oauth.RotateStatus, error) {
+func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, uint, string, string, string, oauth.RotateStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	rt, ok := s.refreshTokens[token]
 	if !ok {
-		return "", 0, "", "", oauth.RotateUnknown, nil
+		return "", 0, "", "", "", oauth.RotateUnknown, nil
 	}
 	now := time.Now()
 	if rt.Revoked || now.After(rt.ExpiresAt) {
-		return "", 0, "", "", oauth.RotateReplay, nil
+		return "", 0, "", "", "", oauth.RotateReplay, nil
 	}
 	if clientID != "" && rt.ClientID != clientID {
-		return "", 0, "", "", oauth.RotateReplay, nil
+		return "", 0, "", "", "", oauth.RotateReplay, nil
 	}
 	if resource != "" && rt.Resource != "" && resource != rt.Resource {
-		return "", 0, "", "", oauth.RotateReplay, nil
+		return "", 0, "", "", "", oauth.RotateReplay, nil
 	}
 	if rt.UsedAt != nil {
 		return s.resolvePostUseLocked(rt, now)
@@ -198,29 +199,29 @@ func (s *Storage) RotateRefreshToken(token, clientID, resource string) (string, 
 	rt.UsedAt = &usedAt
 	rt.Successor = succ
 	s.refreshTokens[token] = rt
-	if err := s.issueInChainLocked(succ, "", rt.ClientID, rt.Resource, rt.ChainRoot, rt.UserID); err != nil {
-		return "", 0, "", "", oauth.RotateUnknown, err
+	if err := s.issueInChainLocked(succ, "", rt.ClientID, rt.Resource, rt.Scope, rt.ChainRoot, rt.UserID); err != nil {
+		return "", 0, "", "", "", oauth.RotateUnknown, err
 	}
-	return rt.ClientID, rt.UserID, rt.Resource, succ, oauth.RotateOK, nil
+	return rt.ClientID, rt.UserID, rt.Resource, rt.Scope, succ, oauth.RotateOK, nil
 }
 
 // resolvePostUseLocked applies reuse-vs-replay to an already-rotated token.
 // In-window reuse returns the same successor (no fresh mint); beyond the
 // window the chain is revoked. Caller must hold s.mu.
-func (s *Storage) resolvePostUseLocked(rt oauth.RefreshToken, now time.Time) (string, uint, string, string, oauth.RotateStatus, error) {
+func (s *Storage) resolvePostUseLocked(rt oauth.RefreshToken, now time.Time) (string, uint, string, string, string, oauth.RotateStatus, error) {
 	if rt.UsedAt == nil {
-		return "", 0, "", "", oauth.RotateReplay, nil
+		return "", 0, "", "", "", oauth.RotateReplay, nil
 	}
 	if now.Sub(*rt.UsedAt) <= s.reuseWindow {
 		if rt.Successor == "" {
-			return "", 0, "", "", oauth.RotateReplay, nil
+			return "", 0, "", "", "", oauth.RotateReplay, nil
 		}
-		return rt.ClientID, rt.UserID, rt.Resource, rt.Successor, oauth.RotateOKReused, nil
+		return rt.ClientID, rt.UserID, rt.Resource, rt.Scope, rt.Successor, oauth.RotateOKReused, nil
 	}
 	if err := s.revokeChainLocked(rt.ChainRoot); err != nil {
-		return "", 0, "", "", oauth.RotateUnknown, err
+		return "", 0, "", "", "", oauth.RotateUnknown, err
 	}
-	return "", 0, "", "", oauth.RotateReplay, nil
+	return "", 0, "", "", "", oauth.RotateReplay, nil
 }
 
 // RevokeChain marks every token in a chain as revoked (RFC 7009).

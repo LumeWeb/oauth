@@ -135,10 +135,10 @@ func TestCodeSingleUse(t *testing.T) {
 
 func TestRefreshRotation(t *testing.T) {
 	s, _ := newTestStorage(t)
-	if err := s.IssueRefreshToken("root", "client_a", "", 5); err != nil {
+	if err := s.IssueRefreshToken("root", "client_a", "", "", 5); err != nil {
 		t.Fatalf("issue root: %v", err)
 	}
-	clientID, _, _, successor, status, err := s.RotateRefreshToken("root", "client_a", "")
+	clientID, _, _, _, successor, status, err := s.RotateRefreshToken("root", "client_a", "")
 	if err != nil || status != oauth.RotateOK {
 		t.Fatalf("rotate: status=%v err=%v", status, err)
 	}
@@ -146,7 +146,7 @@ func TestRefreshRotation(t *testing.T) {
 		t.Fatalf("clientID=%q successor=%q", clientID, successor)
 	}
 	// In-window reuse returns the same successor.
-	_, _, _, again, status, err := s.RotateRefreshToken("root", "client_a", "")
+	_, _, _, _, again, status, err := s.RotateRefreshToken("root", "client_a", "")
 	if err != nil || status != oauth.RotateOKReused {
 		t.Fatalf("reuse: status=%v err=%v", status, err)
 	}
@@ -154,7 +154,7 @@ func TestRefreshRotation(t *testing.T) {
 		t.Fatalf("in-window reuse expected same successor, got %q", again)
 	}
 	// Unknown token.
-	if _, _, _, _, status, _ := s.RotateRefreshToken("nope", "", ""); status != oauth.RotateUnknown {
+	if _, _, _, _, _, status, _ := s.RotateRefreshToken("nope", "", ""); status != oauth.RotateUnknown {
 		t.Fatalf("unknown status=%v", status)
 	}
 }
@@ -163,14 +163,14 @@ func TestRefreshRotation(t *testing.T) {
 // UPDATE admits exactly one winner on concurrent first use.
 func TestRefreshConcurrentFirstUseOnlyOneWins(t *testing.T) {
 	s, _ := newTestStorage(t)
-	if err := s.IssueRefreshToken("root", "client_a", "", 1); err != nil {
+	if err := s.IssueRefreshToken("root", "client_a", "", "", 1); err != nil {
 		t.Fatalf("issue root: %v", err)
 	}
 	const n = 32
 	results := make(chan oauth.RotateStatus, n)
 	for i := 0; i < n; i++ {
 		go func() {
-			_, _, _, _, st, _ := s.RotateRefreshToken("root", "client_a", "")
+			_, _, _, _, _, st, _ := s.RotateRefreshToken("root", "client_a", "")
 			results <- st
 		}()
 	}
@@ -220,7 +220,7 @@ func TestReap(t *testing.T) {
 	s, _ := newTestStorage(t)
 	now := time.Now()
 
-	if err := s.IssueRefreshToken("expired-rt", "c", "", 1); err != nil {
+	if err := s.IssueRefreshToken("expired-rt", "c", "", "", 1); err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 	// Backdate the refresh token to expired.
@@ -237,7 +237,7 @@ func TestReap(t *testing.T) {
 	if err := s.Reap(now); err != nil {
 		t.Fatalf("reap: %v", err)
 	}
-	if _, _, _, _, status, _ := s.RotateRefreshToken("expired-rt", "", ""); status != oauth.RotateUnknown {
+	if _, _, _, _, _, status, _ := s.RotateRefreshToken("expired-rt", "", ""); status != oauth.RotateUnknown {
 		t.Fatalf("expected rotated expired root gone, status=%v", status)
 	}
 	if _, err := s.GetAccessToken("expired-at"); !errors.Is(err, oauth.ErrTokenNotFound) {
@@ -263,5 +263,57 @@ func TestRestartRepopulation(t *testing.T) {
 	toks, err := s.AllAccessTokens()
 	if err != nil || len(toks) != 1 || toks[0].Token != "t1" {
 		t.Fatalf("AllAccessTokens: %+v err %v", toks, err)
+	}
+}
+
+// TestScopeRoundTrip verifies the granted scope survives persistence and
+// rotation in the production GORM adapter, so a resource server can enforce
+// scope requirements against tokens read back after a restart or refresh.
+func TestScopeRoundTrip(t *testing.T) {
+	s, _ := newTestStorage(t)
+
+	if err := s.SaveAccessToken(oauth.AccessToken{
+		Token:     "at1",
+		ClientID:  "c1",
+		Resource:  "https://mcp.example.com",
+		UserID:    7,
+		Scope:     "read write",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("save access token: %v", err)
+	}
+	at, err := s.GetAccessToken("at1")
+	if err != nil {
+		t.Fatalf("get access token: %v", err)
+	}
+	if at.Scope != "read write" || at.Resource != "https://mcp.example.com" {
+		t.Fatalf("access token scope/resource lost: %+v", at)
+	}
+
+	if err := s.IssueRefreshToken("rt-root", "c1", "https://mcp.example.com", "read write", 7); err != nil {
+		t.Fatalf("issue refresh token: %v", err)
+	}
+	clientID, userID, resource, scope, successor, status, err := s.RotateRefreshToken("rt-root", "", "")
+	if err != nil || status != oauth.RotateOK {
+		t.Fatalf("rotate: status=%v err=%v", status, err)
+	}
+	if clientID != "c1" || userID != 7 || resource != "https://mcp.example.com" || scope != "read write" {
+		t.Fatalf("rotation lost binding/scope: client=%q userID=%d resource=%q scope=%q", clientID, userID, resource, scope)
+	}
+	if successor == "" {
+		t.Fatal("expected a successor token")
+	}
+
+	// Two-hop rotation: the successor's successor must still carry the scope,
+	// guarding against a hop that drops granted permissions.
+	_, _, _, scope2, successor2, status2, err := s.RotateRefreshToken(successor, "", "")
+	if err != nil || status2 != oauth.RotateOK {
+		t.Fatalf("second rotate: status=%v err=%v", status2, err)
+	}
+	if scope2 != "read write" {
+		t.Fatalf("second-hop scope lost: got %q, want %q", scope2, "read write")
+	}
+	if successor2 == "" {
+		t.Fatal("expected a second successor token")
 	}
 }

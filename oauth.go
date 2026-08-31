@@ -141,6 +141,7 @@ type RefreshToken struct {
 	ClientID  string
 	Resource  string
 	UserID    uint
+	Scope     string
 	ChainRoot string
 	ExpiresAt time.Time
 	UsedAt    *time.Time
@@ -154,7 +155,25 @@ type AccessToken struct {
 	ClientID  string
 	Resource  string
 	UserID    uint
+	Scope     string
 	ExpiresAt time.Time
+}
+
+// ValidatedToken is the outcome of validating a bearer token. It surfaces the
+// full grant record so resource servers can enforce RFC 8707 audience binding
+// (Resource) and RFC 6749 scope requirements (Scope) rather than only knowing
+// the token is known and unexpired.
+type ValidatedToken struct {
+	// UserID is the resource owner the grant is bound to.
+	UserID uint
+	// Expiry is the token expiry (raw, before clock-skew grace).
+	Expiry time.Time
+	// Resource is the RFC 8707 resource (audience) the token was minted for.
+	Resource string
+	// ClientID is the OAuth client the token was issued to.
+	ClientID string
+	// Scope is the space-delimited set of scopes granted on the token.
+	Scope string
 }
 
 // Resource describes a protected resource (RFC 9728 / RFC 8707) that this AS
@@ -421,24 +440,27 @@ func (s *AuthorizationServer) ExchangeCode(req TokenRequest) (*TokenResponse, er
 		}
 		return nil, err
 	}
-	return s.issueTokenPair(entry.ClientID, entry.Resource, entry.UserID)
+	return s.issueTokenPair(entry.ClientID, entry.Resource, entry.Scope, entry.UserID)
 }
 
 // issueTokenPair mints a fresh (access, refresh) pair, persists both, and
-// returns the RFC 6749 §5.1 response.
-func (s *AuthorizationServer) issueTokenPair(clientID, resource string, userID uint) (*TokenResponse, error) {
+// returns the RFC 6749 §5.1 response. The granted scope from the authorization
+// is bound to both tokens so a resource server can enforce scope requirements
+// against the validated access token.
+func (s *AuthorizationServer) issueTokenPair(clientID, resource, scope string, userID uint) (*TokenResponse, error) {
 	access, refresh := NewTokenPair()
 	accessTok := AccessToken{
 		Token:     access,
 		ClientID:  clientID,
 		Resource:  resource,
 		UserID:    userID,
+		Scope:     scope,
 		ExpiresAt: time.Now().Add(s.cfg.TokenTTL),
 	}
 	if err := s.store.SaveAccessToken(accessTok); err != nil {
 		return nil, err
 	}
-	if err := s.store.IssueRefreshToken(refresh, clientID, resource, userID); err != nil {
+	if err := s.store.IssueRefreshToken(refresh, clientID, resource, scope, userID); err != nil {
 		return nil, err
 	}
 	return &TokenResponse{
@@ -474,13 +496,15 @@ func (s *AuthorizationServer) RefreshToken(req TokenRequest) (*TokenResponse, er
 	if err := s.requireActiveClient(clientID); err != nil {
 		return nil, err
 	}
-	_, userID, boundResource, successor, status, err := s.store.RotateRefreshToken(req.RefreshToken, clientID, req.Resource)
+	_, userID, boundResource, boundScope, successor, status, err := s.store.RotateRefreshToken(req.RefreshToken, clientID, req.Resource)
 	if err != nil {
 		return nil, err
 	}
 	switch status {
 	case RotateOK, RotateOKReused:
 		// Successor already persisted by RotateRefreshToken; store the fresh access token.
+		// The refreshed token keeps the grant's bound scope (RFC 6749 §6) so
+		// downstream scope enforcement stays consistent across rotation.
 		access := NewToken(32)
 		expiry := time.Now().Add(s.cfg.TokenTTL)
 		if err := s.store.SaveAccessToken(AccessToken{
@@ -488,6 +512,7 @@ func (s *AuthorizationServer) RefreshToken(req TokenRequest) (*TokenResponse, er
 			ClientID:  clientID,
 			Resource:  boundResource,
 			UserID:    userID,
+			Scope:     boundScope,
 			ExpiresAt: expiry,
 		}); err != nil {
 			return nil, err
@@ -507,18 +532,36 @@ func (s *AuthorizationServer) RefreshToken(req TokenRequest) (*TokenResponse, er
 
 // ValidateAccessToken checks whether a bearer token is valid (not expired
 // within the clock-skew grace). Returns the bound userID and expiry if valid.
+// Use ValidateAccessTokenInfo when the caller also needs the token's bound
+// resource (RFC 8707 audience) and scope for resource-server enforcement.
 func (s *AuthorizationServer) ValidateAccessToken(token string) (userID uint, expiry time.Time, ok bool) {
+	vt, ok := s.ValidateAccessTokenInfo(token)
+	return vt.UserID, vt.Expiry, ok
+}
+
+// ValidateAccessTokenInfo checks whether a bearer token is valid (not expired
+// within the clock-skew grace) and returns the full validated record. The
+// ValidatedToken exposes the RFC 8707 bound resource and the granted scope so
+// a resource server (e.g. an MCP server) can enforce audience binding and
+// scope requirements, not merely token liveness.
+func (s *AuthorizationServer) ValidateAccessTokenInfo(token string) (ValidatedToken, bool) {
 	at, err := s.store.GetAccessToken(token)
 	if err != nil {
-		return 0, time.Time{}, false
+		return ValidatedToken{}, false
 	}
 	now := time.Now()
 	if now.After(at.ExpiresAt.Add(s.cfg.ClockSkew)) {
 		// Beyond the skew boundary: purge so a restart never resurrects it.
 		_ = s.store.DeleteAccessToken(token)
-		return 0, time.Time{}, false
+		return ValidatedToken{}, false
 	}
-	return at.UserID, at.ExpiresAt, true
+	return ValidatedToken{
+		UserID:   at.UserID,
+		Expiry:   at.ExpiresAt,
+		Resource: at.Resource,
+		ClientID: at.ClientID,
+		Scope:    at.Scope,
+	}, true
 }
 
 // RevokeToken revokes an access token or an entire refresh-token chain

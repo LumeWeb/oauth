@@ -49,6 +49,7 @@ type OAuthRefreshToken struct {
 	ClientID  string     `gorm:"index;not null;column:client_id"`
 	Resource  string     `gorm:"column:resource"`
 	UserID    uint       `gorm:"not null;column:user_id"`
+	Scope     string     `gorm:"column:scope"`
 	ChainRoot string     `gorm:"index;column:chain_root"`
 	ExpiresAt time.Time  `gorm:"not null;column:expires_at"`
 	UsedAt    *time.Time `gorm:"column:used_at"`
@@ -66,6 +67,7 @@ type OAuthAccessToken struct {
 	ClientID  string    `gorm:"index;not null;column:client_id"`
 	Resource  string    `gorm:"column:resource"`
 	UserID    uint      `gorm:"not null;column:user_id"`
+	Scope     string    `gorm:"column:scope"`
 	ExpiresAt time.Time `gorm:"not null;column:expires_at"`
 }
 
