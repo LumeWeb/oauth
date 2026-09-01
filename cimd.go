@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -54,10 +53,10 @@ var defaultCIMDAllowedHosts = map[string]bool{
 }
 
 // CIMDResolver resolves URL-form client_ids (RFC 9291) into client metadata
-// documents. It is the resolution half of AS-level CIMD support: it enforces
-// a host allowlist and an SSRF defense against private/link-local addresses
-// before fetching, validates the fetched document, and caches results for a
-// TTL so repeated authorize requests from the same client do not re-fetch.
+// documents. It is the resolution half of AS-level CIMD support: it fetches
+// only hosts on an explicit allowlist (the SSRF defense), validates the
+// fetched document, and caches results for a TTL so repeated authorize
+// requests from the same client do not re-fetch.
 //
 // Resolution requires outbound networking, so unlike the rest of this package
 // it is not pure domain logic; it is used only by a consumer that opts in via
@@ -127,11 +126,13 @@ func (r *CIMDResolver) IsClientIDDocumentURL(clientID string) bool {
 	return false
 }
 
-// allowedHost reports whether the URL's host is permitted to be fetched.
-// A host in the explicit allowlist is always permitted (loopback included,
-// so development servers can be added). Any other host is rejected if it
-// resolves to a private, loopback, link-local, multicast, or unspecified
-// address — the SSRF defense. Hosts that fail to resolve are rejected.
+// allowedHost reports whether the URL's host is permitted to be fetched. The
+// allowlist is the sole gate: a host must be in the explicit allowlist (a
+// consumer adds known/trusted hosts via AllowHost) or the fetch is rejected.
+// No DNS-based filtering is attempted — resolving the host here would differ
+// from the resolution the HTTP client performs on the actual request, and
+// trusting that result would open a DNS-rebinding TOCTOU hole. Rejecting any
+// non-allowlisted host outright is both simpler and the actual SSRF defense.
 func (r *CIMDResolver) allowedHost(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -144,20 +145,7 @@ func (r *CIMDResolver) allowedHost(rawURL string) bool {
 	r.mu.Lock()
 	allowlisted := r.allowedHosts[host]
 	r.mu.Unlock()
-	if allowlisted {
-		return true
-	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return false
-	}
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-			ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-			return false
-		}
-	}
-	return false
+	return allowlisted
 }
 
 // Resolve fetches and validates the client metadata document at the URL-form
