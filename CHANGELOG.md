@@ -1,3 +1,9 @@
+## 0.1.5 (2026-09-01)
+
+### Features
+
+- add mandatory SSRF gate to CIMD resolver, make allowlist opt-in
+
 ## 0.1.4 (2026-09-01)
 
 ### Features
