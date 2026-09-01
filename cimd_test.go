@@ -199,16 +199,80 @@ func TestResolveNoRedirectURIs(t *testing.T) {
 	}
 }
 
-func TestResolveUnsupportedAuthMethod(t *testing.T) {
+// TestResolveAcceptsAnyAuthMethod is the regression guard for the relaxed
+// CIMD gate: whatever token_endpoint_auth_method a client declares (RFC 7591
+// §3.2.1) is accepted instead of rejected, and the declared value is preserved
+// in the resolved metadata.
+func TestResolveAcceptsAnyAuthMethod(t *testing.T) {
+	for _, method := range []string{
+		"none",
+		"client_secret_basic",
+		"client_secret_post",
+		"client_secret_jwt",
+		"private_key_jwt",
+		"tls_client_auth",
+		"self_signed_tls_client_auth",
+		"custom_method",
+	} {
+		t.Run(method, func(t *testing.T) {
+			r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, map[string]any{
+					"client_id":                  clientMetaURL,
+					"redirect_uris":              []string{"https://app/callback"},
+					"token_endpoint_auth_method": method,
+				}), nil
+			}})
+			md, err := r.Resolve(context.Background(), clientMetaURL)
+			if err != nil {
+				t.Fatalf("expected declared auth method %q to be accepted, got %v", method, err)
+			}
+			if md.TokenEndpointAuthMethod != method {
+				t.Fatalf("TokenEndpointAuthMethod = %q, want %q (declared method must be preserved)", md.TokenEndpointAuthMethod, method)
+			}
+		})
+	}
+}
+
+// TestResolveAcceptsPrivateKeyJWT covers the ChatGPT client metadata document
+// (https://chatgpt.com/.well-known/oauth-client-configuration), which declares
+// token_endpoint_auth_method "private_key_jwt" and was previously rejected by
+// the CIMD gate.
+func TestResolveAcceptsPrivateKeyJWT(t *testing.T) {
 	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusOK, map[string]any{
 			"client_id":                  clientMetaURL,
-			"redirect_uris":              []string{"https://app/callback"},
-			"token_endpoint_auth_method": "client_secret_basic",
+			"client_name":                "ChatGPT",
+			"redirect_uris":              []string{"https://chatgpt.com/oauth/callback"},
+			"token_endpoint_auth_method": "private_key_jwt",
 		}), nil
 	}})
-	if _, err := r.Resolve(context.Background(), clientMetaURL); err == nil {
-		t.Fatal("expected unsupported auth method to fail")
+	md, err := r.Resolve(context.Background(), clientMetaURL)
+	if err != nil {
+		t.Fatalf("expected private_key_jwt document to resolve, got %v", err)
+	}
+	if md.TokenEndpointAuthMethod != "private_key_jwt" {
+		t.Fatalf("TokenEndpointAuthMethod = %q, want %q", md.TokenEndpointAuthMethod, "private_key_jwt")
+	}
+	if md.ClientName != "ChatGPT" {
+		t.Fatalf("ClientName = %q, want %q", md.ClientName, "ChatGPT")
+	}
+}
+
+// TestResolveEmptyAuthMethodDefaultsToNone asserts that a document omitting
+// token_endpoint_auth_method resolves with the RFC 7591 default of "none".
+func TestResolveEmptyAuthMethodDefaultsToNone(t *testing.T) {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, map[string]any{
+			"client_id":     clientMetaURL,
+			"redirect_uris": []string{"https://app/callback"},
+		}), nil
+	}})
+	md, err := r.Resolve(context.Background(), clientMetaURL)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if md.TokenEndpointAuthMethod != "none" {
+		t.Fatalf("TokenEndpointAuthMethod = %q, want %q", md.TokenEndpointAuthMethod, "none")
 	}
 }
 

@@ -252,9 +252,6 @@ func (r *CIMDResolver) Resolve(ctx context.Context, clientID string) (CIMDClient
 	if len(doc.RedirectURIs) == 0 {
 		return zero, errors.New("client metadata document has no redirect_uris")
 	}
-	if doc.TokenEndpointAuthMethod != "" && doc.TokenEndpointAuthMethod != "none" {
-		return zero, fmt.Errorf("client metadata requires unsupported token_endpoint_auth_method: %s", doc.TokenEndpointAuthMethod)
-	}
 
 	md := CIMDClientMetadata{
 		ClientID:                doc.ClientID,
