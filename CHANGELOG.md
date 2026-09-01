@@ -1,3 +1,10 @@
+## 0.1.6 (2026-09-01)
+
+### Features
+
+- add public CIMD-aware client metadata lookup
+- persist resolved CIMD clients and their client URI in storage
+
 ## 0.1.5 (2026-09-01)
 
 ### Features
