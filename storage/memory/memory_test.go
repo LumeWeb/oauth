@@ -15,11 +15,11 @@ func newTest(t *testing.T) *Storage {
 
 func TestClientCRUD(t *testing.T) {
 	s := newTest(t)
-	if err := s.SaveClient(oauth.Client{ClientID: "c1", RedirectURIs: []string{"https://a/cb"}}); err != nil {
+	if err := s.SaveClient(oauth.Client{ClientID: "c1", ClientURI: "https://resolver.example/md", RedirectURIs: []string{"https://a/cb"}}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	got, err := s.GetClient("c1")
-	if err != nil || len(got.RedirectURIs) != 1 {
+	if err != nil || got.ClientURI != "https://resolver.example/md" || len(got.RedirectURIs) != 1 {
 		t.Fatalf("get: %+v err %v", got, err)
 	}
 	if _, err := s.GetClient("nope"); !errors.Is(err, oauth.ErrClientNotFound) {

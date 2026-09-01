@@ -61,6 +61,7 @@ func (s *Storage) Close() error {
 func (s *Storage) SaveClient(c oauth.Client) error {
 	model := &OAuthClient{
 		ClientID:          c.ClientID,
+		ClientURI:         c.ClientURI,
 		ClientName:        c.ClientName,
 		RedirectURIs:      mustJSON(c.RedirectURIs),
 		GrantTypes:        mustJSON(c.GrantTypes),
@@ -77,6 +78,7 @@ func (s *Storage) SaveClient(c oauth.Client) error {
 	return s.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "client_id"}},
 		DoUpdates: clause.Assignments(map[string]interface{}{
+			"client_uri":                 model.ClientURI,
 			"client_name":                model.ClientName,
 			"redirect_uris":              model.RedirectURIs,
 			"grant_types":                model.GrantTypes,
@@ -436,6 +438,7 @@ func parseJSON(raw string, out any) error {
 func (s *Storage) clientFromModel(model OAuthClient) oauth.Client {
 	client := oauth.Client{
 		ClientID:          model.ClientID,
+		ClientURI:         model.ClientURI,
 		ClientName:        model.ClientName,
 		TokenEndpointAuth: model.TokenEndpointAuth,
 		UserID:            model.UserID,

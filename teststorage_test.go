@@ -17,6 +17,9 @@ type testStore struct {
 	accessTokens  map[string]AccessToken
 	refreshTTL    time.Duration
 	reuseWindow   time.Duration
+	// saveClientCalls counts SaveClient invocations so tests can assert the
+	// authorization server avoids redundant writes on cached CIMD lookups.
+	saveClientCalls int
 }
 
 func newTestStore() *testStore {
@@ -33,6 +36,7 @@ func newTestStore() *testStore {
 func (ts *testStore) SaveClient(c Client) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
+	ts.saveClientCalls++
 	ts.clients[c.ClientID] = c
 	return nil
 }

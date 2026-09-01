@@ -49,6 +49,7 @@ func TestClientCRUD(t *testing.T) {
 
 	c := oauth.Client{
 		ClientID:          "client_1",
+		ClientURI:         "https://resolver.example/md",
 		ClientName:        "web",
 		RedirectURIs:      []string{"https://app.example.com/cb"},
 		GrantTypes:        []string{"authorization_code"},
@@ -63,7 +64,7 @@ func TestClientCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.ClientName != "web" || len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "https://app.example.com/cb" {
+	if got.ClientName != "web" || got.ClientURI != "https://resolver.example/md" || len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "https://app.example.com/cb" {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 	if _, err := s.GetClient("nope"); !errors.Is(err, oauth.ErrClientNotFound) {
@@ -79,6 +80,7 @@ func TestClientUpsert(t *testing.T) {
 	s, _ := newTestStorage(t)
 	c := oauth.Client{
 		ClientID:     "client_1",
+		ClientURI:    "https://resolver.example/md",
 		ClientName:   "web",
 		RedirectURIs: []string{"https://app.example.com/cb"},
 		IsActive:     true,
@@ -89,6 +91,7 @@ func TestClientUpsert(t *testing.T) {
 	// Re-save the same client with updated fields (e.g. kill-switch toggle);
 	// must update, not hit the unique index.
 	c.ClientName = "web2"
+	c.ClientURI = "https://resolver.example/rotated-md"
 	c.IsActive = false
 	c.RedirectURIs = []string{"https://app.example.com/cb2"}
 	if err := s.SaveClient(c); err != nil {
@@ -98,7 +101,7 @@ func TestClientUpsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.IsActive || got.ClientName != "web2" || len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "https://app.example.com/cb2" {
+	if got.IsActive || got.ClientName != "web2" || got.ClientURI != "https://resolver.example/rotated-md" || len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "https://app.example.com/cb2" {
 		t.Fatalf("upsert did not apply updates: %+v", got)
 	}
 	all, _ := s.AllClients()
