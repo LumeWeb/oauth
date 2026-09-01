@@ -1,3 +1,9 @@
+## 0.1.7 (2026-09-01)
+
+### Features
+
+- accept *.localhost HTTP issuers during loopback issuer validation
+
 ## 0.1.6 (2026-09-01)
 
 ### Features
