@@ -1,15 +1,63 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+// clientMetaURL is the https URL used as the document URL in tests. It is only
+// ever served by the fake RoundTripper, never dialed, so it does not need a
+// resolvable host.
+const clientMetaURL = "https://resolver.test/md"
+
+// fakeRoundTripper returns canned responses, letting Resolve be exercised
+// without outbound networking. Circulating PRs of this package run the SSRF
+// gate (dialContext) separately so the tests stay deterministic.
+type fakeRoundTripper struct {
+	fn func(*http.Request) (*http.Response, error)
+}
+
+func (f fakeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f.fn(req)
+}
+
+// jsonResponse builds an *http.Response carrying body as JSON.
+func jsonResponse(status int, body any) *http.Response {
+	b, _ := json.Marshal(body)
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(bytes.NewReader(b)),
+		Header:     make(http.Header),
+	}
+}
+
+// fakeResolver returns a CIMDResolver whose fetches are served by rt instead
+// of the SSRF-safe transport.
+func fakeResolver(rt http.RoundTripper) *CIMDResolver {
+	r := NewCIMDResolver()
+	r.client.Transport = rt
+	return r
+}
+
+// docResponse builds a valid metadata document whose client_id matches the
+// request the transport is serving.
+func docResponse() *http.Response {
+	return jsonResponse(http.StatusOK, map[string]any{
+		"client_id":                  clientMetaURL,
+		"client_name":                "Claude for Work",
+		"redirect_uris":              []string{"https://app/callback"},
+		"token_endpoint_auth_method": "none",
+	})
+}
 
 func TestIsClientIDDocumentURL(t *testing.T) {
 	r := NewCIMDResolver()
@@ -22,12 +70,11 @@ func TestIsClientIDDocumentURL(t *testing.T) {
 		{"missing path", "https://claude.ai", false},
 		{"root path", "https://claude.ai/", false},
 		{"https with path", "https://claude.ai/oauth/.well-known/client-metadata", true},
-		{"https with nested path", "https://vscode.dev/a/b", true},
-		{"http loopback with path", "http://127.0.0.1:8080/md", true},
-		{"http localhost with path", "http://localhost:8080/md", true},
-		{"http non-loopback", "http://claude.ai/md", false},
-		{"no scheme", "claude.ai/md", false},
-		{"schema relative", "//claude.ai/md", false},
+		{"https with nested path", "https://resolver.test/a/b", true},
+		{"http with path", "http://resolver.test/md", false},
+		{"no scheme", "resolver.test/md", false},
+		{"schema relative", "//resolver.test/md", false},
+		{"empty host", "https:///md", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -38,63 +85,20 @@ func TestIsClientIDDocumentURL(t *testing.T) {
 	}
 }
 
-func TestResolveRejectsHostNotAllowlisted(t *testing.T) {
-	r := NewCIMDResolver()
-	// example.com is not in the default allowlist and is not loopback.
-	_, err := r.Resolve(context.Background(), "https://example.com/md")
-	if err == nil {
-		t.Fatal("expected resolution of a non-allowlisted host to fail")
-	}
-	if !strings.Contains(err.Error(), "not allowlisted") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
+// TestResolveOpenByDefault is the canonical regression guard for the CIMD
+// redesign: with no AllowHost call the allowlist is empty, which means the
+// resolver must accept any public https URL rather than refusing it.
+func TestResolveOpenByDefault(t *testing.T) {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return docResponse(), nil
+	}})
 
-func TestResolveRejectsRedirect(t *testing.T) {
-	var target *httptest.Server
-	target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"client_id":     target.URL + "/md",
-			"redirect_uris": []string{"https://app/callback"},
-		})
-	}))
-	defer target.Close()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, target.URL+"/md", http.StatusFound)
-	}))
-	defer server.Close()
-
-	r := NewCIMDResolver()
-	r.AllowHost("127.0.0.1")
-	_, err := r.Resolve(context.Background(), server.URL+"/md")
-	if err == nil {
-		t.Fatal("expected redirect to be rejected")
-	}
-}
-
-func TestResolve(t *testing.T) {
-	fetches := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fetches++
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"client_id":                  "http://" + r.Host + "/md",
-			"client_name":                "Claude for Work",
-			"redirect_uris":              []string{"https://app/callback"},
-			"token_endpoint_auth_method": "none",
-		})
-	}))
-	defer server.Close()
-
-	r := NewCIMDResolver()
-	r.AllowHost("127.0.0.1")
-
-	md, err := r.Resolve(context.Background(), server.URL+"/md")
+	md, err := r.Resolve(context.Background(), clientMetaURL)
 	if err != nil {
-		t.Fatalf("Resolve failed: %v", err)
+		t.Fatalf("expected empty allowlist to be open, got %v", err)
 	}
-	if md.ClientID != server.URL+"/md" {
-		t.Fatalf("ClientID = %q, want %q", md.ClientID, server.URL+"/md")
+	if md.ClientID != clientMetaURL {
+		t.Fatalf("ClientID = %q, want %q", md.ClientID, clientMetaURL)
 	}
 	if md.ClientName != "Claude for Work" {
 		t.Fatalf("ClientName = %q", md.ClientName)
@@ -105,74 +109,178 @@ func TestResolve(t *testing.T) {
 	if md.TokenEndpointAuthMethod != "none" {
 		t.Fatalf("TokenEndpointAuthMethod = %q", md.TokenEndpointAuthMethod)
 	}
+}
 
-	// A second call within the TTL must be served from cache.
-	if _, err := r.Resolve(context.Background(), server.URL+"/md"); err != nil {
-		t.Fatalf("cached Resolve failed: %v", err)
+func TestResolveAllowlistRestricts(t *testing.T) {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return docResponse(), nil
+	}})
+	r.AllowHost("allowed.test")
+
+	if _, err := r.Resolve(context.Background(), "https://blocked.test/md"); err == nil {
+		t.Fatal("expected a host outside the allowlist to be rejected")
+	} else if !strings.Contains(err.Error(), "not allowlisted") {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if fetches != 1 {
-		t.Fatalf("expected document to be fetched once, got %d fetches", fetches)
+
+	// The allowlisted host still resolves.
+	r.client.Transport = fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, map[string]any{
+			"client_id":     "https://allowed.test/md",
+			"redirect_uris": []string{"https://app/callback"},
+		}), nil
+	}}
+	md, err := r.Resolve(context.Background(), "https://allowed.test/md")
+	if err != nil {
+		t.Fatalf("expected allowlisted host to resolve, got %v", err)
+	}
+	if md.ClientID != "https://allowed.test/md" {
+		t.Fatalf("ClientID = %q", md.ClientID)
+	}
+}
+
+func TestResolveCaches(t *testing.T) {
+	var fetches atomic.Int32
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		fetches.Add(1)
+		return docResponse(), nil
+	}})
+
+	for i := 0; i < 2; i++ {
+		if _, err := r.Resolve(context.Background(), clientMetaURL); err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Fatalf("expected document to be fetched once, got %d fetches", got)
+	}
+}
+
+func TestResolveRejectsNonHTTPS(t *testing.T) {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return docResponse(), nil
+	}})
+	for _, id := range []string{"http://resolver.test/md", "ftp://resolver.test/md", "resolver.test/md"} {
+		if _, err := r.Resolve(context.Background(), id); err == nil {
+			t.Fatalf("expected non-https URL %q to be rejected", id)
+		}
+	}
+}
+
+func TestResolveRejectsRedirect(t *testing.T) {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		resp := jsonResponse(http.StatusFound, nil)
+		resp.Header.Set("Location", "https://evil.test/callback")
+		return resp, nil
+	}})
+	if _, err := r.Resolve(context.Background(), clientMetaURL); err == nil {
+		t.Fatal("expected a redirect to be rejected")
 	}
 }
 
 func TestResolveClientIDMismatch(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, map[string]any{
 			"client_id":     "https://other.example/md",
 			"redirect_uris": []string{"https://app/callback"},
-		})
-	}))
-	defer server.Close()
-
-	r := NewCIMDResolver()
-	r.AllowHost("127.0.0.1")
-	if _, err := r.Resolve(context.Background(), server.URL+"/md"); err == nil {
+		}), nil
+	}})
+	if _, err := r.Resolve(context.Background(), clientMetaURL); err == nil {
 		t.Fatal("expected client_id mismatch to fail")
 	}
 }
 
 func TestResolveNoRedirectURIs(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"client_id": "http://" + r.Host + "/md",
-		})
-	}))
-	defer server.Close()
-
-	r := NewCIMDResolver()
-	r.AllowHost("127.0.0.1")
-	if _, err := r.Resolve(context.Background(), server.URL+"/md"); err == nil {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, map[string]any{"client_id": clientMetaURL}), nil
+	}})
+	if _, err := r.Resolve(context.Background(), clientMetaURL); err == nil {
 		t.Fatal("expected missing redirect_uris to fail")
 	}
 }
 
 func TestResolveUnsupportedAuthMethod(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"client_id":                  "http://" + r.Host + "/md",
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, map[string]any{
+			"client_id":                  clientMetaURL,
 			"redirect_uris":              []string{"https://app/callback"},
 			"token_endpoint_auth_method": "client_secret_basic",
-		})
-	}))
-	defer server.Close()
-
-	r := NewCIMDResolver()
-	r.AllowHost("127.0.0.1")
-	if _, err := r.Resolve(context.Background(), server.URL+"/md"); err == nil {
+		}), nil
+	}})
+	if _, err := r.Resolve(context.Background(), clientMetaURL); err == nil {
 		t.Fatal("expected unsupported auth method to fail")
 	}
 }
 
 func TestResolveNon200(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "nope", http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	r := NewCIMDResolver()
-	r.AllowHost("127.0.0.1")
-	if _, err := r.Resolve(context.Background(), server.URL+"/md"); err == nil {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusNotFound, nil), nil
+	}})
+	if _, err := r.Resolve(context.Background(), clientMetaURL); err == nil {
 		t.Fatal("expected non-200 to fail")
+	}
+}
+
+func TestResolveInvalidJSON(t *testing.T) {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("not json")),
+			Header:     make(http.Header),
+		}, nil
+	}})
+	if _, err := r.Resolve(context.Background(), clientMetaURL); err == nil {
+		t.Fatal("expected invalid JSON to fail")
+	}
+}
+
+func TestIsPublicRoutableIP(t *testing.T) {
+	public := []string{
+		"8.8.8.8",
+		"1.1.1.1",
+		"93.184.216.34",
+	}
+	private := []string{
+		"10.0.0.1",
+		"172.16.0.1",
+		"192.168.1.1",
+		"100.64.0.1",
+		"198.18.0.1",
+		"127.0.0.1",
+		"169.254.169.254",
+		"0.0.0.0",
+		"224.0.0.1",
+	}
+	for _, s := range public {
+		if !isPublicRoutableIP(net.ParseIP(s)) {
+			t.Fatalf("expected %s to be publicly routable", s)
+		}
+	}
+	for _, s := range private {
+		if isPublicRoutableIP(net.ParseIP(s)) {
+			t.Fatalf("expected %s to be refused as non-public", s)
+		}
+	}
+	if isPublicRoutableIP(nil) {
+		t.Fatal("expected nil IP to be refused")
+	}
+}
+
+// TestDialContextRefusesNonPublicIP exercises the SSRF gate's connection
+// decision: a host that resolves only to non-public addresses must not be
+// dialable, regardless of the allowlist.
+func TestDialContextRefusesNonPublicIP(t *testing.T) {
+	nonPublic := []string{"127.0.0.1", "10.0.0.1", "169.254.169.254"}
+	for _, ip := range nonPublic {
+		r := NewCIMDResolver()
+		r.lookupAddr = func(_ context.Context, _ string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP(ip)}}, nil
+		}
+		conn, err := r.dialContext(context.Background(), "tcp", "host:443")
+		if err == nil {
+			conn.Close()
+			t.Fatalf("expected dial of %s to be refused", ip)
+		}
 	}
 }
 
@@ -197,24 +305,18 @@ func TestMetadataAdvertisesCIMDOnlyWhenResolverSet(t *testing.T) {
 }
 
 func TestValidateAuthorizeRequestResolvesCIMDClient(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"client_id":     "http://" + r.Host + "/md",
-			"redirect_uris": []string{"https://app/callback"},
-		})
-	}))
-	defer server.Close()
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return docResponse(), nil
+	}})
 
 	store := newTestStore()
 	cfg := DefaultConfig()
 	cfg.Issuer = "https://as.example.com"
-	resolver := NewCIMDResolver()
-	resolver.AllowHost("127.0.0.1")
-	as := NewAuthorizationServer(cfg, store).WithCIMDResolver(resolver)
+	as := NewAuthorizationServer(cfg, store).WithCIMDResolver(r)
 
 	req := AuthorizeRequest{
 		ResponseType:        "code",
-		ClientID:            server.URL + "/md",
+		ClientID:            clientMetaURL,
 		RedirectURI:         "https://app/callback",
 		CodeChallenge:       "abc123abc123abc123abc123abc123abc123abc123abc",
 		CodeChallengeMethod: "S256",
@@ -231,22 +333,16 @@ func TestValidateAuthorizeRequestResolvesCIMDClient(t *testing.T) {
 }
 
 func TestRequireActiveClientAcceptsCIMDClient(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"client_id":     "http://" + r.Host + "/md",
-			"redirect_uris": []string{"https://app/callback"},
-		})
-	}))
-	defer server.Close()
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return docResponse(), nil
+	}})
 
 	store := newTestStore()
 	cfg := DefaultConfig()
 	cfg.Issuer = "https://as.example.com"
-	resolver := NewCIMDResolver()
-	resolver.AllowHost("127.0.0.1")
-	as := NewAuthorizationServer(cfg, store).WithCIMDResolver(resolver)
+	as := NewAuthorizationServer(cfg, store).WithCIMDResolver(r)
 
-	if err := as.requireActiveClient(server.URL + "/md"); err != nil {
+	if err := as.requireActiveClient(clientMetaURL); err != nil {
 		t.Fatalf("expected CIMD client to be active, got %v", err)
 	}
 
@@ -257,22 +353,15 @@ func TestRequireActiveClientAcceptsCIMDClient(t *testing.T) {
 }
 
 func TestExchangeWithCIMDClient(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"client_id":     "http://" + r.Host + "/md",
-			"redirect_uris": []string{"https://app/callback"},
-		})
-	}))
-	defer server.Close()
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return docResponse(), nil
+	}})
 
 	store := newTestStore()
 	cfg := DefaultConfig()
 	cfg.Issuer = "https://as.example.com"
-	resolver := NewCIMDResolver()
-	resolver.AllowHost("127.0.0.1")
-	as := NewAuthorizationServer(cfg, store).WithCIMDResolver(resolver)
+	as := NewAuthorizationServer(cfg, store).WithCIMDResolver(r)
 
-	// Issue a code using the CIMD client_id.
 	verifier := "abc123abc123abc123abc123abc123abc123abc123abc123abc123"
 	challenge := base64.RawURLEncoding.EncodeToString(func() []byte {
 		sum := sha256.Sum256([]byte(verifier))
@@ -280,7 +369,7 @@ func TestExchangeWithCIMDClient(t *testing.T) {
 	}())
 	code, err := as.IssueAuthorizationCode(AuthorizeRequest{
 		ResponseType:        "code",
-		ClientID:            server.URL + "/md",
+		ClientID:            clientMetaURL,
 		RedirectURI:         "https://app/callback",
 		CodeChallenge:       challenge,
 		CodeChallengeMethod: "S256",
@@ -289,11 +378,10 @@ func TestExchangeWithCIMDClient(t *testing.T) {
 		t.Fatalf("IssueAuthorizationCode: %v", err)
 	}
 
-	// Exchange requires the active-client kill-switch to pass for a CIMD id.
 	resp, err := as.ExchangeCode(TokenRequest{
 		GrantType:    "authorization_code",
 		Code:         code,
-		ClientID:     server.URL + "/md",
+		ClientID:     clientMetaURL,
 		RedirectURI:  "https://app/callback",
 		CodeVerifier: verifier,
 	})
