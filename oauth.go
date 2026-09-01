@@ -257,6 +257,24 @@ func NewAuthorizationServer(cfg Config, store Storage) *AuthorizationServer {
 	return &AuthorizationServer{cfg: cfg, store: store, resources: make(map[string]Resource)}
 }
 
+// IsLoopbackURI reports whether the parsed URL's host is a loopback host or a
+// *.localhost subdomain. It is used for issuer validation, where a local
+// development issuer may live on any subdomain of the reserved .localhost TLD
+// (RFC 6761), e.g. account.localhost. Unlike IsLoopbackRedirectURI, which
+// restricts native-client redirects to the exact loopback hosts of RFC 8252
+// §7.3, this accepts any number of labels beneath .localhost. Redirect
+// semantics are intentionally unchanged.
+func IsLoopbackURI(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return strings.HasSuffix(u.Hostname(), ".localhost")
+}
+
 // validateIssuer enforces the REQUIRED HTTPS issuer contract from RFC 8414.
 // Plain-HTTP issuers are accepted only for loopback hosts (local development
 // and tests) to avoid the certificate burden in those environments.
@@ -277,7 +295,7 @@ func validateIssuerErr(issuer string) error {
 	case "https":
 		return nil
 	case "http":
-		if IsLoopbackRedirectURI(u) {
+		if IsLoopbackURI(u) {
 			return nil
 		}
 	}
