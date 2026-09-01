@@ -341,6 +341,15 @@ func (s *AuthorizationServer) lookupClient(clientID string) (Client, error) {
 	return s.store.GetClient(clientID)
 }
 
+// ClientMetadata returns the client registered for clientID, resolving it
+// through the configured CIMD resolver when clientID is a URL-form client
+// identifier (RFC 9291). It is a public, CIMD-aware lookup that wraps the
+// server's SSRF-hardened resolver rather than duplicating it. A failed CIMD
+// resolution is returned as an unknown-client error, mirroring lookupClient.
+func (s *AuthorizationServer) ClientMetadata(clientID string) (Client, error) {
+	return s.lookupClient(clientID)
+}
+
 // clientFromCIMD materializes a Client view of a resolved CIMD metadata
 // document. The client is active by construction because it was successfully
 // resolved.
