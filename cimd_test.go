@@ -392,3 +392,31 @@ func TestExchangeWithCIMDClient(t *testing.T) {
 		t.Fatal("expected an access token")
 	}
 }
+
+func TestClientMetadataReturnsCIMDName(t *testing.T) {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return docResponse(), nil
+	}})
+
+	store := newTestStore()
+	cfg := DefaultConfig()
+	cfg.Issuer = "https://as.example.com"
+	as := NewAuthorizationServer(cfg, store).WithCIMDResolver(r)
+
+	client, err := as.ClientMetadata(clientMetaURL)
+	if err != nil {
+		t.Fatalf("ClientMetadata: %v", err)
+	}
+	if client.ClientName != "Claude for Work" {
+		t.Fatalf("ClientName = %q, want %q (client_name must flow from the CIMD document)", client.ClientName, "Claude for Work")
+	}
+	if client.ClientID != clientMetaURL {
+		t.Fatalf("ClientID = %q, want %q", client.ClientID, clientMetaURL)
+	}
+	if len(client.RedirectURIs) != 1 || client.RedirectURIs[0] != "https://app/callback" {
+		t.Fatalf("RedirectURIs = %v", client.RedirectURIs)
+	}
+	if !client.IsActive {
+		t.Fatal("expected CIMD-resolved client to be active")
+	}
+}
