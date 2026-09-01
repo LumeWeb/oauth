@@ -14,9 +14,10 @@ type ASMetadata struct {
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
 	ScopesSupported                   []string `json:"scopes_supported"`
 	// ClientIDMetadataDocumentSupported optionally advertises support for
-	// clients providing a Client ID Metadata Document URL. It is omitted by
-	// default because CIMD resolution itself lives in the consumer, not this
-	// library; a consumer that implements CIMD sets this to advertise it.
+	// clients providing a Client ID Metadata Document URL (RFC 9291). It is
+	// omitted by default; set it to advertise CIMD support. Use
+	// AuthorizationServer.Metadata to have it set automatically when a
+	// CIMDResolver is configured.
 	ClientIDMetadataDocumentSupported *bool `json:"client_id_metadata_document_supported,omitempty"`
 }
 
