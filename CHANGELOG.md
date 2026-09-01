@@ -1,3 +1,13 @@
+## 0.1.4 (2026-09-01)
+
+### Features
+
+- add RFC 9291 client id metadata document resolution
+
+### Fixes
+
+- gate CIMD fetches on allowlist alone, drop dead DNS SSRF block
+
 ## 0.1.3 (2026-08-31)
 
 ### Features
