@@ -1,3 +1,9 @@
+## 0.1.8 (2026-09-01)
+
+### Fixes
+
+- accept any CIMD token_endpoint_auth_method
+
 ## 0.1.7 (2026-09-01)
 
 ### Features
