@@ -11,6 +11,7 @@ import (
 type OAuthClient struct {
 	gorm.Model
 	ClientID          string `gorm:"uniqueIndex;not null;column:client_id"`
+	ClientURI         string `gorm:"type:text;column:client_uri"`
 	ClientName        string `gorm:"column:client_name"`
 	RedirectURIs      string `gorm:"type:text;column:redirect_uris"`
 	GrantTypes        string `gorm:"type:text;column:grant_types"`
