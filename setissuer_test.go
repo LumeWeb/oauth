@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"net/url"
 	"sync"
 	"testing"
 )
@@ -46,6 +47,48 @@ func TestSetIssuer(t *testing.T) {
 			t.Fatalf("expected loopback http issuer to be accepted: %v", err)
 		}
 	})
+
+	t.Run("*.localhost http issuer allowed", func(t *testing.T) {
+		if err := s.SetIssuer("http://account.localhost"); err != nil {
+			t.Fatalf("expected *.localhost http issuer to be accepted: %v", err)
+		}
+	})
+
+	t.Run("localhost-suffixed non-loopback host rejected", func(t *testing.T) {
+		if err := s.SetIssuer("http://evil.localhost.example.com"); err == nil {
+			t.Fatal("expected http issuer on a host merely suffixing localhost to be rejected")
+		}
+	})
+}
+
+func TestIsLoopbackURI(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"http://localhost", true},
+		{"http://localhost:8080", true},
+		{"http://127.0.0.1", true},
+		{"http://127.0.0.1:8080", true},
+		{"http://[::1]:8080", true},
+		{"http://account.localhost", true},
+		{"http://a.b.localhost:9000", true},
+		{"http://localhost.example.com", false},
+		{"http://evil.localhost.example.com", false},
+		{"http://example.com", false},
+	}
+	for _, tc := range cases {
+		u, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.raw, err)
+		}
+		if got := IsLoopbackURI(u); got != tc.want {
+			t.Fatalf("IsLoopbackURI(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+	if IsLoopbackURI(nil) {
+		t.Fatal("expected nil URL to not be loopback")
+	}
 }
 
 func TestSetIssuerDrivesResourceValidation(t *testing.T) {
