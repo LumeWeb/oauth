@@ -465,3 +465,47 @@ func TestLookupCIMDPersistsAndSkipsRefetch(t *testing.T) {
 		t.Fatalf("fetches after cached lookup = %d, want 1 (resolver cache must absorb it)", fetches)
 	}
 }
+
+func TestLookupCIMDPersistsOnlyWhenChanged(t *testing.T) {
+	r := fakeResolver(fakeRoundTripper{fn: func(_ *http.Request) (*http.Response, error) {
+		return docResponse(), nil
+	}})
+
+	store := newTestStore()
+	cfg := DefaultConfig()
+	cfg.Issuer = "https://as.example.com"
+	as := NewAuthorizationServer(cfg, store).WithCIMDResolver(r)
+
+	// Seed the store with a stale CIMD client that differs from the document
+	// (e.g. an earlier rotation already re-resolved it).
+	stale := Client{
+		ClientID:     clientMetaURL,
+		ClientURI:    clientMetaURL,
+		ClientName:   "Stale",
+		RedirectURIs: []string{"https://old/callback"},
+		IsActive:     true,
+	}
+	if err := store.SaveClient(stale); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if store.saveClientCalls != 1 {
+		t.Fatalf("saveClientCalls after seed = %d, want 1", store.saveClientCalls)
+	}
+
+	// First lookup re-resolves and the resolved client differs from the stale
+	// copy, so it must persist the update.
+	if _, err := as.ClientMetadata(clientMetaURL); err != nil {
+		t.Fatalf("first ClientMetadata: %v", err)
+	}
+	if store.saveClientCalls != 2 {
+		t.Fatalf("saveClientCalls after changed lookup = %d, want 2 (must persist update)", store.saveClientCalls)
+	}
+
+	// A TTL-cached lookup now matches the stored copy, so it must not write.
+	if _, err := as.ClientMetadata(clientMetaURL); err != nil {
+		t.Fatalf("cached ClientMetadata: %v", err)
+	}
+	if store.saveClientCalls != 2 {
+		t.Fatalf("saveClientCalls after cached lookup = %d, want 2 (must skip redundant write)", store.saveClientCalls)
+	}
+}

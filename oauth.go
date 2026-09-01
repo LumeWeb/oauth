@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +95,29 @@ type Client struct {
 	Scopes            []string
 	UserID            *uint
 	IsActive          bool
+}
+
+// Equal reports whether c and other describe the same client configuration.
+// It compares each field, including the slice-valued redirect URIs, grant
+// types, response types, and scopes, so callers can detect when a stored
+// client differs from a freshly resolved one.
+func (c Client) Equal(other Client) bool {
+	if c.ClientID != other.ClientID || c.ClientURI != other.ClientURI ||
+		c.ClientName != other.ClientName || c.TokenEndpointAuth != other.TokenEndpointAuth ||
+		c.IsActive != other.IsActive || !equalPtr(c.UserID, other.UserID) {
+		return false
+	}
+	return slices.Equal(c.RedirectURIs, other.RedirectURIs) &&
+		slices.Equal(c.GrantTypes, other.GrantTypes) &&
+		slices.Equal(c.ResponseTypes, other.ResponseTypes) &&
+		slices.Equal(c.Scopes, other.Scopes)
+}
+
+// equalPtr reports whether two pointers point to equal values, treating a nil
+// pointer as unequal to any non-nil pointer. It is generic over comparable
+// pointee types, so it covers any pointer-typed Client field.
+func equalPtr[T comparable](a, b *T) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
 // AuthorizeRequest is the parsed authorization request (RFC 6749 §4.1.1).
@@ -344,9 +368,14 @@ func (s *AuthorizationServer) lookupClient(clientID string) (Client, error) {
 			return Client{}, &cimdRejectedError{err: err}
 		}
 		client := clientFromCIMD(clientID, md)
-		// Best-effort persistence: the client is already valid, so a store
-		// failure must not break the authorize/exchange flow.
-		_ = s.store.SaveClient(client)
+		// Persist only when the resolved metadata differs from the stored
+		// copy (or on first sighting), so a TTL-cached lookup of an unchanged
+		// document skips the full-row upsert on the hot path. Best-effort:
+		// the client is already valid, so a store failure must not break the
+		// authorize/exchange flow.
+		if stored, err := s.store.GetClient(clientID); err != nil || !stored.Equal(client) {
+			_ = s.store.SaveClient(client)
+		}
 		return client, nil
 	}
 	return s.store.GetClient(clientID)
