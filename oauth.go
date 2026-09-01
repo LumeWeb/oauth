@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"errors"
 	"net/url"
 	"strings"
@@ -205,6 +206,12 @@ type AuthorizationServer struct {
 	// resMu guards access to the registered resource registry.
 	resMu     sync.RWMutex
 	resources map[string]Resource
+
+	// cimd is an optional RFC 9291 resolver. When set, URL-form client_ids
+	// are resolved into client metadata documents instead of looked up in
+	// the store, and the AS metadata advertises
+	// client_id_metadata_document_supported.
+	cimd *CIMDResolver
 }
 
 // NewAuthorizationServer creates a new AS with the given config and storage.
@@ -298,14 +305,15 @@ func (s *AuthorizationServer) validateResource(resource string) bool {
 }
 
 // requireActiveClient rejects unknown or deactivated clients before tokens
-// are issued.
+// are issued. URL-form client_ids are resolved through the CIMD resolver when
+// one is configured; a document that resolves is treated as an active client.
 func (s *AuthorizationServer) requireActiveClient(clientID string) error {
 	if clientID == "" {
 		return NewInvalidGrantError("client is inactive or unknown")
 	}
-	client, err := s.store.GetClient(clientID)
+	client, err := s.lookupClient(clientID)
 	if err != nil {
-		if errors.Is(err, ErrClientNotFound) {
+		if errors.Is(err, ErrClientNotFound) || isCIMDRejected(err) {
 			return NewInvalidGrantError("client is inactive or unknown")
 		}
 		return err
@@ -314,6 +322,58 @@ func (s *AuthorizationServer) requireActiveClient(clientID string) error {
 		return NewInvalidGrantError("client is inactive")
 	}
 	return nil
+}
+
+// lookupClient returns the active client for a clientID. When a CIMD resolver
+// is configured and clientID is a URL-form client identifier (RFC 9291), the
+// client is resolved from its metadata document; otherwise it is read from
+// the store. A failed CIMD resolution is wrapped so callers treat it like an
+// unknown client. Resolution fetches without a caller-supplied context; the
+// resolver's HTTP timeout bounds the request.
+func (s *AuthorizationServer) lookupClient(clientID string) (Client, error) {
+	if s.cimd != nil && s.cimd.IsClientIDDocumentURL(clientID) {
+		md, err := s.cimd.Resolve(context.Background(), clientID)
+		if err != nil {
+			return Client{}, &cimdRejectedError{err: err}
+		}
+		return clientFromCIMD(clientID, md), nil
+	}
+	return s.store.GetClient(clientID)
+}
+
+// clientFromCIMD materializes a Client view of a resolved CIMD metadata
+// document. The client is active by construction because it was successfully
+// resolved.
+func clientFromCIMD(clientID string, md CIMDClientMetadata) Client {
+	return Client{
+		ClientID:          clientID,
+		ClientName:        md.ClientName,
+		RedirectURIs:      md.RedirectURIs,
+		GrantTypes:        []string{"authorization_code", "refresh_token"},
+		ResponseTypes:     []string{"code"},
+		TokenEndpointAuth: md.TokenEndpointAuthMethod,
+		IsActive:          true,
+	}
+}
+
+// WithCIMDResolver enables RFC 9291 client-id metadata document resolution on
+// the server. When set, URL-form client_ids presented to the authorize and
+// token endpoints are resolved through r, and Metadata advertises
+// client_id_metadata_document_supported. It returns the receiver for chaining.
+func (s *AuthorizationServer) WithCIMDResolver(r *CIMDResolver) *AuthorizationServer {
+	s.cimd = r
+	return s
+}
+
+// Metadata builds the RFC 8414 authorization-server metadata document for
+// this server, advertising client_id_metadata_document_supported when CIMD
+// resolution is enabled.
+func (s *AuthorizationServer) Metadata() ASMetadata {
+	md := BuildASMetadata(s.cfg)
+	if s.cimd != nil {
+		md.ClientIDMetadataDocumentSupported = new(true)
+	}
+	return md
 }
 
 // RegisterClient handles Dynamic Client Registration (RFC 7591 §3.1).
@@ -362,9 +422,9 @@ func (s *AuthorizationServer) ValidateAuthorizeRequest(req AuthorizeRequest) err
 	if req.ClientID == "" || req.RedirectURI == "" {
 		return NewInvalidRequestError("missing client_id or redirect_uri")
 	}
-	client, err := s.store.GetClient(req.ClientID)
+	client, err := s.lookupClient(req.ClientID)
 	if err != nil {
-		if errors.Is(err, ErrClientNotFound) {
+		if errors.Is(err, ErrClientNotFound) || isCIMDRejected(err) {
 			return NewInvalidRequestError("unregistered client or redirect_uri")
 		}
 		return err
